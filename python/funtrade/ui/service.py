@@ -28,6 +28,10 @@ class UiParams:
     paper_position_limit_shares: float
     h0_weight_oil: float
     h0_weight_climate: float
+    trend_epsilon_weight: float
+    trend_fair_value_weight: float
+    trend_gate_sells: bool
+    trend_gate_z: float
 
     def to_settings(self) -> Settings:
         base = Settings.from_env()
@@ -38,6 +42,10 @@ class UiParams:
             regime_consecutive_bars=self.regime_consecutive_bars,
             h0_weight_oil=self.h0_weight_oil,
             h0_weight_climate=self.h0_weight_climate,
+            trend_epsilon_weight=self.trend_epsilon_weight,
+            trend_fair_value_weight=self.trend_fair_value_weight,
+            trend_gate_sells=self.trend_gate_sells,
+            trend_gate_z=self.trend_gate_z,
         )
 
     def to_paper_settings(self) -> PaperSettings:
@@ -71,6 +79,10 @@ def default_ui_params(symbol: str = "VWCE.DE") -> UiParams:
         paper_position_limit_shares=p.position_limit_shares,
         h0_weight_oil=s.h0_weight_oil,
         h0_weight_climate=s.h0_weight_climate,
+        trend_epsilon_weight=s.trend_epsilon_weight,
+        trend_fair_value_weight=s.trend_fair_value_weight,
+        trend_gate_sells=s.trend_gate_sells,
+        trend_gate_z=s.trend_gate_z,
     )
 
 

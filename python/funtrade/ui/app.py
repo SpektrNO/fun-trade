@@ -15,7 +15,7 @@ from funtrade.execution.paper import (
 )
 from funtrade.data.market import latest_price
 from funtrade.models.equilibrium import calibrate_equilibrium
-from funtrade.models.perturbation import detect_latest_perturbations, signal_from_epsilon
+from funtrade.models.perturbation import detect_latest_perturbations, signal_from_epsilon, trend_signal_kwargs
 from funtrade.ui.charts import pnl_with_trade_shares_chart, price_epsilon_chart
 from funtrade.ui.service import (
     default_ui_params,
@@ -36,6 +36,10 @@ if not hasattr(params, "h0_weight_oil"):
         params,
         h0_weight_oil=settings.h0_weight_oil,
         h0_weight_climate=settings.h0_weight_climate,
+        trend_epsilon_weight=settings.trend_epsilon_weight,
+        trend_fair_value_weight=settings.trend_fair_value_weight,
+        trend_gate_sells=settings.trend_gate_sells,
+        trend_gate_z=settings.trend_gate_z,
     )
     st.session_state.params = params
 
@@ -65,6 +69,38 @@ if settings.h0_enable_climate:
         float(params.h0_weight_climate),
         0.01,
         help="Shifts fair value with climate-transition z-score (spread or ETF proxy).",
+    )
+
+if settings.trend_enable:
+    st.sidebar.markdown("**Trend expectation (H₂)**")
+    params.trend_epsilon_weight = st.sidebar.slider(
+        "Trend ε dampening",
+        0.0,
+        0.50,
+        float(params.trend_epsilon_weight),
+        0.01,
+        help="Subtract w×z_trend from ε; uptrend lowers sell urgency.",
+    )
+    params.trend_fair_value_weight = st.sidebar.slider(
+        "Trend fair-value lift",
+        0.0,
+        0.30,
+        float(params.trend_fair_value_weight),
+        0.01,
+        help="Raises H₀ fair value when price is above its moving average.",
+    )
+    params.trend_gate_sells = st.sidebar.checkbox(
+        "Gate sells in uptrend",
+        value=bool(params.trend_gate_sells),
+        help="Block exit signals when z_trend is above the gate threshold.",
+    )
+    params.trend_gate_z = st.sidebar.slider(
+        "Trend gate z",
+        0.0,
+        2.0,
+        float(params.trend_gate_z),
+        0.05,
+        disabled=not params.trend_gate_sells,
     )
 
 tab_wallet, tab_backtest, tab_trade = st.tabs(["Wallet", "Backtest", "Trade"])
@@ -196,6 +232,8 @@ with tab_trade:
         latest = series.iloc[-1]
         st.metric("ε", f"{latest['epsilon']:.3f}")
         st.metric("Regime valid", "Yes" if latest["regime_valid"] else "No")
+        if settings.trend_enable:
+            st.metric("z_trend", f"{latest.get('z_trend', 0.0):.2f}")
 
         chart = series[["epsilon", "price"]].tail(120).reset_index()
         chart = chart.rename(columns={"index": "time"})
@@ -219,6 +257,7 @@ with tab_trade:
             sig = signal_from_epsilon(
                 p.epsilon, params.epsilon_threshold, p.regime_valid,
                 long_only=True, current_position=pos_qty,
+                **trend_signal_kwargs(params.to_settings(), float(p.inputs.get("z_trend", 0.0))),
             )
             price = latest_price(p.symbol, settings=params.to_settings())
             if price and sig != 0:

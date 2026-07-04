@@ -210,7 +210,7 @@ SYMBOL_ALIASES=NO0010336977=0P00000O4C.IR,MYFUND.XX=0P00001234.IR
 
 After adding a symbol, run `make ingest SYMBOL=NO0010336977` then `make calibrate-all`.
 
-Optional H₀ macro (oil/climate) — off by default; see `.env.example` and [docs/component-model.md](docs/component-model.md). Active components: `uv run funtrade-components`.
+Optional H₀ macro (oil/climate) and **trend expectation (H₂)** — off by default; see `.env.example` and [docs/component-model.md](docs/component-model.md). Active components: `uv run funtrade-components`.
 
 ## Services
 

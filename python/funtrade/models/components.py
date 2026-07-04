@@ -104,6 +104,13 @@ H1_COMPONENTS: tuple[ComponentVariable, ...] = (
         "20d realized vol vs 252d baseline.",
         "z_score",
     ),
+    ComponentVariable(
+        "z_trend",
+        "Trend Expectation",
+        ComponentRole.H1,
+        "Price vs SMA lookback (optional H₂); positive = above medium-term trend.",
+        "z_score",
+    ),
 )
 
 ALL_H0_COMPONENTS = (*H0_COMPONENTS, *OPTIONAL_H0_COMPONENTS)

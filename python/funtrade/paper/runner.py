@@ -8,7 +8,7 @@ from argparse import ArgumentParser
 from funtrade.config import Settings
 from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars
 from funtrade.execution.paper import PaperSettings, execute_trade, get_portfolio_summary
-from funtrade.models.perturbation import detect_latest_perturbations, signal_from_epsilon
+from funtrade.models.perturbation import detect_latest_perturbations, signal_from_epsilon, trend_signal_kwargs
 
 
 def run_paper_once(
@@ -40,6 +40,7 @@ def run_paper_once(
             p.regime_valid,
             long_only=True,
             current_position=pos_qty,
+            **trend_signal_kwargs(settings, float(p.inputs.get("z_trend", 0.0))),
         )
         price_df = load_price_bars(p.symbol, MARKET_ADJ_CLOSE, settings=settings)
         if price_df.empty:

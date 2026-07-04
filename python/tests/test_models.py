@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from funtrade.models.equilibrium import _fit_ou_parameters, _fit_seasonality
-from funtrade.models.perturbation import signal_from_epsilon, _compute_regime_validity
+from funtrade.models.perturbation import signal_from_epsilon, _compute_regime_validity, _compute_z_trend
 
 
 def test_signal_from_epsilon_mean_reversion():
@@ -20,6 +20,25 @@ def test_signal_from_epsilon_long_only_sell():
 def test_signal_from_epsilon_exit_when_regime_invalid_if_holding():
     assert signal_from_epsilon(2.5, 2.0, False, long_only=True, current_position=10) == -1
     assert signal_from_epsilon(-2.5, 2.0, False, long_only=True, current_position=0) == 0
+
+
+def test_signal_from_epsilon_trend_gate_blocks_sell_in_uptrend():
+    assert signal_from_epsilon(
+        2.5, 2.0, True, long_only=True, current_position=10,
+        z_trend=1.0, trend_gate_sells=True, trend_gate_z=0.5,
+    ) == 0
+    assert signal_from_epsilon(
+        2.5, 2.0, True, long_only=True, current_position=10,
+        z_trend=1.0, trend_gate_sells=False, trend_gate_z=0.5,
+    ) == -1
+
+
+def test_compute_z_trend_positive_when_above_sma():
+    index = pd.date_range("2024-01-01", periods=300, freq="D", tz="UTC")
+    price = pd.Series(100.0, index=index)
+    price.iloc[-40:] = 130.0
+    z = _compute_z_trend(price, None, lookback=50, use_benchmark=False)
+    assert float(z.iloc[-1]) > 0
 
 
 def test_fit_ou_parameters_synthetic():

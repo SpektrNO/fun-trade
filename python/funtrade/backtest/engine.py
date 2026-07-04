@@ -14,7 +14,7 @@ from funtrade.config import Settings
 from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars, normalize_daily_bars, save_backtest_run
 from funtrade.execution.paper import _position_after_trade
 from funtrade.models.equilibrium import calibrate_equilibrium
-from funtrade.models.perturbation import compute_perturbation_series, signal_from_epsilon
+from funtrade.models.perturbation import compute_perturbation_series, signal_from_epsilon, trend_signal_kwargs
 
 
 def _daily_last_bars(frame: pd.DataFrame) -> pd.DataFrame:
@@ -225,6 +225,7 @@ def run_backtest(
             bool(row["regime_valid"]),
             long_only=True,
             current_position=position,
+            **trend_signal_kwargs(settings, float(row.get("z_trend", 0.0))),
         )
         model_signals.iloc[i] = raw
         traded = 0.0

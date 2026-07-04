@@ -53,11 +53,22 @@ class EquilibriumModel:
         season = self.seasonal_component(prices.index)
         return pd.Series(log_prices.values - season, index=prices.index, name="x")
 
-    def equilibrium_band(self, prices: pd.Series, *, symbol: str | None = None) -> pd.DataFrame:
+    def equilibrium_band(
+        self,
+        prices: pd.Series,
+        *,
+        symbol: str | None = None,
+        settings: Settings | None = None,
+        z_trend: pd.Series | None = None,
+    ) -> pd.DataFrame:
+        settings = settings or Settings.from_env()
         season = self.seasonal_component(prices.index)
         x = self.deseasonalize(prices)
-        h0_adj = compute_h0_fundamental_adjustment(symbol or self.symbol, prices.index)
-        log_mean = season + self.mu + h0_adj
+        h0_adj = compute_h0_fundamental_adjustment(symbol or self.symbol, prices.index, settings=settings)
+        trend_adj = pd.Series(0.0, index=prices.index)
+        if settings.trend_enable and settings.trend_fair_value_weight != 0.0 and z_trend is not None:
+            trend_adj = settings.trend_fair_value_weight * z_trend.reindex(prices.index).fillna(0.0)
+        log_mean = season + self.mu + h0_adj + trend_adj
         upper = np.exp(log_mean + 2 * self.sigma)
         lower = np.exp(log_mean - 2 * self.sigma)
         return pd.DataFrame(

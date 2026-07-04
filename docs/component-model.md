@@ -24,4 +24,12 @@ After enabling, run `make ingest-factors` and tune weights (`H0_WEIGHT_OIL`, `H0
 | `z_rel_strength` | Return vs sector/benchmark ETF |
 | `z_vol` | 20d vol vs 252d baseline |
 
-Trade when `|ε| > EPSILON_THRESHOLD` and `regime_valid` (long-only).
+Trade when `|ε| > EPSILON_THRESHOLD` and `regime_valid` (long-only). Optional **trend expectation** (`TREND_ENABLE`) dampens ε in uptrends and can gate sell exits.
+
+**Trend (H₂)** — optional via `.env`:
+
+| Setting | Role |
+|---------|------|
+| `TREND_EPSILON_WEIGHT` | Subtract w×z_trend from ε (uptrend → less positive ε) |
+| `TREND_FAIR_VALUE_WEIGHT` | Lift H₀ fair value in uptrends |
+| `TREND_GATE_SELLS` + `TREND_GATE_Z` | Hold through rallies — block sells when z_trend high |

@@ -54,6 +54,13 @@ class Settings:
     h0_climate_clean_ticker: str
     h0_climate_fossil_ticker: str
     h0_weight_climate: float
+    trend_enable: bool
+    trend_lookback_days: int
+    trend_use_benchmark: bool
+    trend_epsilon_weight: float
+    trend_fair_value_weight: float
+    trend_gate_sells: bool
+    trend_gate_z: float
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -86,6 +93,13 @@ class Settings:
             h0_climate_clean_ticker=os.getenv("H0_CLIMATE_CLEAN_TICKER", "INRG.L"),
             h0_climate_fossil_ticker=os.getenv("H0_CLIMATE_FOSSIL_TICKER", "BZ=F"),
             h0_weight_climate=float(os.getenv("H0_WEIGHT_CLIMATE", "0.06")),
+            trend_enable=_env_bool("TREND_ENABLE", False),
+            trend_lookback_days=int(os.getenv("TREND_LOOKBACK_DAYS", "200")),
+            trend_use_benchmark=_env_bool("TREND_USE_BENCHMARK", False),
+            trend_epsilon_weight=float(os.getenv("TREND_EPSILON_WEIGHT", "0.15")),
+            trend_fair_value_weight=float(os.getenv("TREND_FAIR_VALUE_WEIGHT", "0.0")),
+            trend_gate_sells=_env_bool("TREND_GATE_SELLS", True),
+            trend_gate_z=float(os.getenv("TREND_GATE_Z", "0.5")),
         )
 
     def active_h0_component_ids(self) -> tuple[str, ...]:

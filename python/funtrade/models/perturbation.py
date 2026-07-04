@@ -34,6 +34,23 @@ def _zscore(series: pd.Series, window: int = 20) -> pd.Series:
     return (series - rolling_mean) / rolling_std
 
 
+def _compute_z_trend(
+    price: pd.Series,
+    bench_price: pd.Series | None,
+    *,
+    lookback: int,
+    use_benchmark: bool,
+) -> pd.Series:
+    """Z-scored distance from SMA — positive = above medium-term trend (uptrend expectation)."""
+    series = bench_price if use_benchmark and bench_price is not None and not bench_price.empty else price
+    min_periods = max(20, lookback // 4)
+    sma = series.rolling(lookback, min_periods=min_periods).mean()
+    deviation = (series / sma.clip(lower=1e-6) - 1.0).fillna(0.0)
+    if use_benchmark and bench_price is not None:
+        deviation = deviation.reindex(price.index, method="ffill").fillna(0.0)
+    return _zscore(deviation, window=252)
+
+
 def compute_perturbation_series(
     symbol: str,
     *,
@@ -50,7 +67,23 @@ def compute_perturbation_series(
         return pd.DataFrame()
 
     price = df["price"].astype(float)
-    band = equilibrium.equilibrium_band(price, symbol=symbol)
+
+    bench_sym = benchmark_symbol or sector_etf_for(symbol, settings.benchmark)
+    bench_df = load_price_bars(bench_sym, MARKET_ADJ_CLOSE, settings=settings)
+    bench_price = None
+    if not bench_df.empty:
+        bench_price = bench_df["price"].astype(float).reindex(price.index, method="ffill")
+
+    z_trend = pd.Series(0.0, index=df.index)
+    if settings.trend_enable:
+        z_trend = _compute_z_trend(
+            price,
+            bench_price,
+            lookback=settings.trend_lookback_days,
+            use_benchmark=settings.trend_use_benchmark,
+        )
+
+    band = equilibrium.equilibrium_band(price, symbol=symbol, settings=settings, z_trend=z_trend)
     z_return = band["residual"] / equilibrium.sigma
 
     volume = df["volume"].astype(float) if "volume" in df.columns else pd.Series(0.0, index=df.index)
@@ -59,10 +92,7 @@ def compute_perturbation_series(
     else:
         z_volume = pd.Series(0.0, index=df.index)
 
-    bench_sym = benchmark_symbol or sector_etf_for(symbol, settings.benchmark)
-    bench_df = load_price_bars(bench_sym, MARKET_ADJ_CLOSE, settings=settings)
-    if not bench_df.empty:
-        bench_price = bench_df["price"].astype(float).reindex(price.index, method="ffill")
+    if bench_price is not None:
         rel_ret = price.pct_change().fillna(0.0) - bench_price.pct_change().fillna(0.0)
         z_rel_strength = _zscore(rel_ret.fillna(0.0))
     else:
@@ -84,6 +114,9 @@ def compute_perturbation_series(
         blend_weights["z_rel_strength"] = weights[2]
 
     epsilon = blend_epsilon(z_return, z_volume, z_rel_strength, h1_scores, weights=blend_weights)
+    if settings.trend_enable and settings.trend_epsilon_weight != 0.0:
+        # Uptrend (z_trend > 0) lowers ε → less eager to sell on mean-reversion alone.
+        epsilon = epsilon - settings.trend_epsilon_weight * z_trend
     magnitude = epsilon.abs()
 
     regime_valid = _compute_regime_validity(
@@ -102,6 +135,7 @@ def compute_perturbation_series(
         "z_volume": z_volume,
         "z_rel_strength": z_rel_strength,
         "z_vol": z_vol,
+        "z_trend": z_trend,
         "regime_valid": regime_valid,
         "price": price,
     }
@@ -170,6 +204,7 @@ def detect_latest_perturbations(
                     "z_volume": float(latest["z_volume"]),
                     "z_rel_strength": float(latest["z_rel_strength"]),
                     "z_vol": float(latest["z_vol"]),
+                    "z_trend": float(latest.get("z_trend", 0.0)),
                     "price": float(latest["price"]),
                     "h1": {
                         k.replace("h1_", ""): float(latest[k])
@@ -204,6 +239,9 @@ def signal_from_epsilon(
     *,
     long_only: bool = True,
     current_position: float = 0.0,
+    z_trend: float = 0.0,
+    trend_gate_sells: bool = False,
+    trend_gate_z: float = 0.5,
 ) -> int:
     """Return +1 (buy), -1 (sell/exit), or 0 (flat). Mean-reversion on perturbation."""
     if abs(epsilon) <= threshold:
@@ -211,8 +249,11 @@ def signal_from_epsilon(
 
     if epsilon > threshold:
         if long_only:
-            # Exit long when overvalued — allowed even if regime invalid (de-risk).
-            return -1 if current_position > 0 else 0
+            if current_position > 0:
+                if trend_gate_sells and z_trend > trend_gate_z:
+                    return 0
+                return -1
+            return 0
         if not regime_valid:
             return 0
         return -1
@@ -221,3 +262,14 @@ def signal_from_epsilon(
     if not regime_valid:
         return 0
     return 1
+
+
+def trend_signal_kwargs(settings: Settings, z_trend: float = 0.0) -> dict:
+    """Extra kwargs for signal_from_epsilon when trend expectation is enabled."""
+    if not settings.trend_enable:
+        return {}
+    return {
+        "z_trend": z_trend,
+        "trend_gate_sells": settings.trend_gate_sells,
+        "trend_gate_z": settings.trend_gate_z,
+    }
