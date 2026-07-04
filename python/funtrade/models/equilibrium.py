@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import numpy as np
@@ -10,6 +11,16 @@ import statsmodels.api as sm
 
 from funtrade.data.factors import compute_h0_fundamental_adjustment
 from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars, save_equilibrium_params
+from funtrade.config import Settings
+
+# When OU φ→1, intercept/(1-φ) blows up on trending ETFs; anchor μ to recent levels instead.
+_OU_PHI_MU_ANCHOR = 0.995
+_MU_ANCHOR_DAYS = 252
+_MAX_HALF_LIFE_DAYS = 500.0
+
+
+def _calibration_lookback_days() -> int:
+    return int(os.getenv("H0_CALIBRATION_DAYS", "504"))
 
 
 @dataclass
@@ -90,7 +101,12 @@ def _fit_seasonality(log_prices: pd.Series) -> dict:
     }
 
 
-def _fit_ou_parameters(residuals: pd.Series, dt_days: float = 1.0) -> tuple[float, float, float]:
+def _fit_ou_parameters(
+    residuals: pd.Series,
+    dt_days: float = 1.0,
+    *,
+    mu_anchor_days: int = _MU_ANCHOR_DAYS,
+) -> tuple[float, float, float]:
     x = residuals.dropna().values
     if len(x) < 10:
         raise ValueError("Insufficient data for OU calibration")
@@ -102,9 +118,15 @@ def _fit_ou_parameters(residuals: pd.Series, dt_days: float = 1.0) -> tuple[floa
     phi = float(result.params[1])
     intercept = float(result.params[0])
 
+    phi_raw = phi
     phi = np.clip(phi, 1e-6, 0.9999)
     kappa = -np.log(phi) / dt_days
-    mu = intercept / (1 - phi)
+    if phi_raw >= _OU_PHI_MU_ANCHOR:
+        # Trending / near-unit-root: long-run OU mean is unstable; use recent deseasonalized level.
+        tail = residuals.dropna().tail(mu_anchor_days)
+        mu = float(tail.median()) if len(tail) else float(np.median(x))
+    else:
+        mu = intercept / (1 - phi)
     residuals_ou = x_cur - (intercept + phi * x_lag)
     sigma = float(np.std(residuals_ou, ddof=1) / np.sqrt(dt_days))
 
@@ -118,10 +140,16 @@ def calibrate_equilibrium(
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
     persist: bool = True,
+    settings: Settings | None = None,
 ) -> EquilibriumModel:
-    df = load_price_bars(symbol, market, start=start, end=end)
+    settings = settings or Settings.from_env()
+    df = load_price_bars(symbol, market, start=start, end=end, settings=settings)
     if df.empty or len(df) < 60:
         raise ValueError(f"Insufficient price data for symbol {symbol}")
+
+    lookback = _calibration_lookback_days()
+    if start is None and len(df) > lookback:
+        df = df.tail(lookback)
 
     prices = df["price"].astype(float)
     log_prices = np.log(prices.clip(lower=0.01))
@@ -138,6 +166,10 @@ def calibrate_equilibrium(
     residuals = pd.Series(log_prices.values - season, index=log_prices.index, name="residual")
     kappa, mu, sigma = _fit_ou_parameters(residuals, dt_days=1.0)
     half_life = np.log(2) / kappa
+    if half_life > _MAX_HALF_LIFE_DAYS:
+        mu = float(residuals.tail(_MU_ANCHOR_DAYS).median())
+        half_life = float(_MAX_HALF_LIFE_DAYS)
+        kappa = np.log(2) / half_life
 
     model = EquilibriumModel(
         symbol=symbol,
@@ -150,18 +182,19 @@ def calibrate_equilibrium(
 
     if persist:
         save_equilibrium_params(
-            symbol, kappa, mu, sigma, float(half_life), seasonal_coeffs
+            symbol, kappa, mu, sigma, float(half_life), seasonal_coeffs, settings=settings
         )
 
     return model
 
 
-def load_or_calibrate(symbol: str, **kwargs) -> EquilibriumModel:
+def load_or_calibrate(symbol: str, *, settings: Settings | None = None, **kwargs) -> EquilibriumModel:
     from funtrade.data.loader import load_latest_equilibrium_params
 
-    params = load_latest_equilibrium_params(symbol)
+    settings = settings or Settings.from_env()
+    params = load_latest_equilibrium_params(symbol, settings=settings)
     if params is None:
-        return calibrate_equilibrium(symbol, **kwargs)
+        return calibrate_equilibrium(symbol, settings=settings, **kwargs)
 
     return EquilibriumModel(
         symbol=symbol,

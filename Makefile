@@ -3,6 +3,7 @@ ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PYTHON_DIR := $(ROOT)/python
 SYMBOL ?= VWCE.DE
 DAYS ?= 730
+REFRESH_DAYS ?= 14
 
 UV ?= uv
 COMPOSE ?= docker compose
@@ -15,8 +16,8 @@ endif
 .DEFAULT_GOAL := help
 
 .PHONY: help setup build test run run-down migrate logs \
-        seed ingest ingest-factors calibrate detect backtest paper reconcile \
-        ui components jacobian sweep compare clean
+        seed ingest ingest-factors calibrate calibrate-all detect backtest paper reconcile \
+        refresh grafana-reload ui components jacobian sweep compare clean
 
 help: ## Show this help
 	@echo "FunTrade — useful commands"
@@ -49,8 +50,12 @@ run-down: ## Stop Docker services
 logs: ## Tail Docker logs
 	$(COMPOSE) -f $(ROOT)/docker-compose.yml logs -f --tail=100
 
+grafana-reload: ## Restart Grafana to load provisioned dashboards
+	$(COMPOSE) -f $(ROOT)/docker-compose.yml restart grafana
+	@echo "Grafana: http://localhost:3001 → Dashboards → FunTrade folder"
+
 migrate: ## Apply SQL migrations to running DB
-	@for f in $(ROOT)/sql/002_paper_trading.sql $(ROOT)/sql/003_factor_signals.sql; do \
+	@for f in $(ROOT)/sql/002_paper_trading.sql $(ROOT)/sql/003_factor_signals.sql $(ROOT)/sql/004_perturbation_daily.sql; do \
 		echo "Applying $$f..."; \
 		docker exec -i funtrade-timescaledb psql -U $${POSTGRES_USER:-funtrade} -d $${POSTGRES_DB:-funtrade} < "$$f"; \
 	done
@@ -61,11 +66,14 @@ seed: build ## Load synthetic daily bars (offline, no API)
 ingest: build ## Ingest watchlist from Stooq/yfinance (needs network)
 	cd $(PYTHON_DIR) && $(UV) run funtrade-ingest --days $(DAYS)
 
-ingest-factors: build ## Ingest H0 macro factors (EUR/USD, rates, credit)
+ingest-factors: build ## Ingest H0 macro factors (core + optional oil/climate from .env)
 	cd $(PYTHON_DIR) && $(UV) run funtrade-ingest-factors --days $(DAYS)
 
 calibrate: build ## Calibrate H0 OU equilibrium (SYMBOL=...)
 	cd $(PYTHON_DIR) && $(UV) run funtrade-calibrate --symbol $(SYMBOL)
+
+calibrate-all: build ## Calibrate H0 for entire WATCHLIST
+	cd $(PYTHON_DIR) && $(UV) run funtrade-calibrate --all
 
 detect: build ## Detect latest ε perturbations for watchlist
 	cd $(PYTHON_DIR) && $(UV) run funtrade-detect
@@ -79,11 +87,21 @@ sweep: build ## Threshold sweep for SYMBOL
 compare: build ## Strategy vs EXSA.DE buy-and-hold
 	cd $(PYTHON_DIR) && $(UV) run funtrade-backtest --symbol $(SYMBOL) --compare
 
-paper: build ## One-shot forward paper trade (SYMBOL=... or all watchlist)
+paper: build ## Forward paper trade (all WATCHLIST; SYMBOL=... on CLI for one)
+ifeq ($(origin SYMBOL),command line)
 	cd $(PYTHON_DIR) && $(UV) run funtrade-paper --symbol $(SYMBOL)
+else
+	cd $(PYTHON_DIR) && $(UV) run funtrade-paper
+endif
 
 reconcile: build ## Cross-check Stooq vs EOD (needs EOD_API_TOKEN)
 	cd $(PYTHON_DIR) && $(UV) run funtrade-reconcile --symbol $(SYMBOL)
+
+refresh: build ## Recent ingest + detect + paper (REFRESH_DAYS=14, needs network)
+	$(MAKE) ingest DAYS=$(REFRESH_DAYS)
+	$(MAKE) ingest-factors DAYS=$(REFRESH_DAYS)
+	$(MAKE) detect
+	$(MAKE) paper
 
 ui: build ## Streamlit console → http://localhost:8501
 	cd $(PYTHON_DIR) && $(UV) run funtrade-ui
@@ -104,5 +122,5 @@ demo: run seed calibrate detect backtest ## Offline demo (seed → calibrate →
 	@echo "Demo complete for $(SYMBOL). Try: make ui"
 
 # Convenience: live data pipeline
-live: run ingest ingest-factors calibrate detect ## Live data pipeline (needs network)
+live: run ingest ingest-factors calibrate-all detect ## Live data pipeline (needs network)
 	@echo "Live ingest complete. Try: make backtest SYMBOL=$(SYMBOL)"

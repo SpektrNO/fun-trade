@@ -72,3 +72,63 @@ def test_run_backtest_tracks_position(monkeypatch):
     )
     assert result.total_trades >= 1
     assert result.position_shares.loc[test_idx].max() > 0
+
+
+def test_backtest_realized_vs_unrealized(monkeypatch):
+    import funtrade.backtest.engine as eng
+
+    idx = pd.date_range("2024-01-01", periods=200, freq="D", tz="UTC")
+    train_end = idx[139]
+    test_idx = idx[140:]
+
+    prices = np.linspace(40, 60, len(idx))
+    price_df = pd.DataFrame({"price": prices, "volume": 1e6}, index=idx)
+
+    def fake_load(symbol, market="adj_close", **kwargs):
+        return price_df
+
+    class FakeEq:
+        symbol = "VWCE.DE"
+        sigma = 1.0
+
+        def equilibrium_band(self, prices, *, symbol=None):
+            p = prices.astype(float)
+            return pd.DataFrame({"residual": np.zeros(len(p))}, index=p.index)
+
+    def fake_series(symbol, **kwargs):
+        eps = pd.Series(0.0, index=idx)
+        eps.iloc[145] = -3.0
+        eps.iloc[150] = 3.0
+        rv = pd.Series(True, index=idx)
+        return pd.DataFrame(
+            {
+                "epsilon": eps,
+                "magnitude": eps.abs(),
+                "z_return": eps,
+                "z_volume": 0.0,
+                "z_rel_strength": 0.0,
+                "z_vol": 0.0,
+                "regime_valid": rv,
+                "price": price_df["price"],
+            },
+            index=idx,
+        )
+
+    monkeypatch.setattr(eng, "load_price_bars", fake_load)
+    monkeypatch.setattr(eng, "calibrate_equilibrium", lambda *a, **k: FakeEq())
+    monkeypatch.setattr(eng, "compute_perturbation_series", fake_series)
+
+    result = run_backtest(
+        "VWCE.DE",
+        train_end=train_end,
+        test_start=test_idx[0],
+        epsilon_threshold=2.0,
+        initial_cash_eur=10_000,
+        trade_shares=10,
+        persist=False,
+    )
+    m = result.metrics
+    assert m["realized_pnl_eur"] > 0
+    assert m["unrealized_pnl_eur"] == 0.0
+    assert m["final_shares"] == 0.0
+    assert abs(m["net_profit_eur"] - (m["total_pnl_eur"] - m["total_fees_eur"])) < 1e-6

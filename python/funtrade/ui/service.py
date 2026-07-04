@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pandas as pd
 
@@ -29,15 +29,11 @@ class UiParams:
 
     def to_settings(self) -> Settings:
         base = Settings.from_env()
-        return Settings(
-            database_url=base.database_url,
-            watchlist=base.watchlist,
-            benchmark=base.benchmark,
-            currency=base.currency,
+        return replace(
+            base,
             epsilon_threshold=self.epsilon_threshold,
             regime_spike_sigma=self.regime_spike_sigma,
             regime_consecutive_bars=self.regime_consecutive_bars,
-            min_daily_volume_eur=base.min_daily_volume_eur,
         )
 
     def to_paper_settings(self) -> PaperSettings:
@@ -95,21 +91,106 @@ def perturbation_context(
     return compute_perturbation_series(symbol, weights=weights, settings=settings)
 
 
+def suggest_epsilon_threshold(epsilon: pd.Series, *, quantile: float = 0.75) -> float:
+    """Highest ε threshold that still produces buy signals (long-only mean reversion)."""
+    if epsilon.empty:
+        return 0.5
+    neg = epsilon[epsilon < 0].abs()
+    if neg.empty:
+        return 0.5
+    # Highest threshold with at least one buy day in the test window.
+    best = 0.35
+    for step in range(35, 150):
+        th = step / 100.0
+        if (epsilon < -th).sum() >= 1:
+            best = th
+    tail = float(neg.quantile(quantile))
+    suggested = min(best, tail * 1.05)
+    return round(max(0.35, min(0.55, suggested)), 2)
+
+
 def run_backtest_for_ui(params: UiParams) -> dict:
     settings = params.to_settings()
+    requested_threshold = params.epsilon_threshold
     result = run_backtest(
         params.symbol,
-        epsilon_threshold=params.epsilon_threshold,
+        epsilon_threshold=requested_threshold,
         weights=params.perturbation_weights(),
+        initial_cash_eur=params.paper_initial_cash,
         settings=settings,
         persist=False,
     )
+    eps = result.epsilon.astype(float)
+    suggested = suggest_epsilon_threshold(eps)
+    effective_threshold = requested_threshold
+    threshold_adjusted = False
+    if result.total_trades == 0 and suggested < requested_threshold - 0.01:
+        result = run_backtest(
+            params.symbol,
+            epsilon_threshold=suggested,
+            weights=params.perturbation_weights(),
+            initial_cash_eur=params.paper_initial_cash,
+            settings=settings,
+            persist=False,
+        )
+        eps = result.epsilon.astype(float)
+        effective_threshold = suggested
+        threshold_adjusted = True
+    m = result.metrics
+    threshold = effective_threshold
+    buy_signals = int((eps < -threshold).sum())
+    sell_signals = int((eps > threshold).sum())
+    regime = result.regime_valid.astype(bool)
+    buy_with_regime = int(((eps < -threshold) & regime).sum())
+    buy_blocked_regime = int(((eps < -threshold) & ~regime).sum())
     return {
+        "symbol": params.symbol,
+        "epsilon_threshold": threshold,
+        "requested_threshold": requested_threshold,
+        "threshold_adjusted": threshold_adjusted,
+        "suggested_threshold": suggested,
+        "epsilon_max_abs": float(eps.abs().max()) if not eps.empty else 0.0,
+        "buy_model_signals": buy_signals,
+        "sell_model_signals": sell_signals,
+        "buy_signals_with_regime": buy_with_regime,
+        "buy_signals_blocked_by_regime": buy_blocked_regime,
+        "regime_invalid_days": int((~regime).sum()),
+        "initial_capital_eur": m.get("initial_capital_eur", params.paper_initial_cash),
+        "final_portfolio_eur": m.get("final_portfolio_eur", params.paper_initial_cash),
+        "net_profit_eur": m.get("net_profit_eur", result.total_return),
+        "return_pct": m.get("return_pct", 0.0),
+        "final_cash_eur": m.get("final_cash_eur", params.paper_initial_cash),
+        "final_shares": m.get("final_shares", 0.0),
+        "avg_cost_eur": m.get("avg_cost_eur", 0.0),
+        "realized_pnl_eur": m.get("realized_pnl_eur", 0.0),
+        "unrealized_pnl_eur": m.get("unrealized_pnl_eur", 0.0),
+        "total_pnl_eur": m.get("total_pnl_eur", 0.0),
+        "total_fees_eur": m.get("total_fees_eur", 0.0),
+        "buy_and_hold_profit_eur": m.get("buy_and_hold_profit_eur", 0.0),
         "sharpe": result.sharpe,
         "max_drawdown": result.max_drawdown,
         "total_return": result.total_return,
         "total_trades": result.total_trades,
         "regime_invalidations": result.regime_invalidations,
-        "equity_curve": pd.DataFrame({"time": result.equity_curve.index, "equity": result.equity_curve.values}),
-        "epsilon": pd.DataFrame({"time": result.epsilon.index, "epsilon": result.epsilon.values}),
+        "equity_curve": pd.DataFrame(
+            {"time": result.equity_curve.index, "portfolio_eur": result.equity_curve.values}
+        ),
+        "pnl_curve": pd.DataFrame(
+            {
+                "time": result.realized_pnl.index,
+                "realized_pnl": result.realized_pnl.values,
+                "unrealized_pnl": result.unrealized_pnl.values,
+                "shares_bought": result.trade_volume_shares.where(result.trade_signal > 0, 0.0).values,
+                "shares_sold": result.trade_volume_shares.where(result.trade_signal < 0, 0.0).values,
+                "position_shares": result.position_shares.values,
+            }
+        ),
+        "epsilon": pd.DataFrame({"time": eps.index, "epsilon": eps.values}),
+        "trade_chart": pd.DataFrame(
+            {
+                "time": eps.index,
+                "epsilon": eps.values,
+                "trade_signal": result.trade_signal.values,
+            }
+        ),
     }

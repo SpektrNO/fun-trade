@@ -15,6 +15,7 @@ from funtrade.execution.paper import (
 from funtrade.data.market import latest_price
 from funtrade.models.equilibrium import calibrate_equilibrium
 from funtrade.models.perturbation import detect_latest_perturbations, signal_from_epsilon
+from funtrade.ui.charts import pnl_with_trade_shares_chart, price_epsilon_chart
 from funtrade.ui.service import (
     default_ui_params,
     equilibrium_status,
@@ -32,7 +33,7 @@ params = st.session_state.params
 
 st.sidebar.title("FunTrade")
 params.symbol = st.sidebar.selectbox("Symbol", settings.watchlist, index=settings.watchlist.index(params.symbol) if params.symbol in settings.watchlist else 0)
-params.epsilon_threshold = st.sidebar.slider("ε threshold", 0.5, 5.0, float(params.epsilon_threshold), 0.1)
+params.epsilon_threshold = st.sidebar.slider("ε threshold", 0.3, 3.0, float(params.epsilon_threshold), 0.05)
 params.w_return = st.sidebar.slider("w_return", 0.0, 1.0, float(params.w_return), 0.05)
 params.w_volume = st.sidebar.slider("w_volume", 0.0, 1.0, float(params.w_volume), 0.05)
 params.w_rel_strength = st.sidebar.slider("w_rel_strength", 0.0, 1.0, float(params.w_rel_strength), 0.05)
@@ -80,13 +81,73 @@ with tab_backtest:
 
     if "backtest_view" in st.session_state:
         view = st.session_state.backtest_view
+        st.caption(
+            f"Simulated wallet starting with **€{view['initial_capital_eur']:,.0f}**. "
+            "**Realized** = closed trades; **Unrealized** = open position mark-to-market. "
+            f"Net profit = total PnL − fees (€{view.get('total_fees_eur', 0):,.2f})."
+        )
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total return (EUR)", f"{view['total_return']:,.2f}")
-        m2.metric("Sharpe", f"{view['sharpe']:.2f}")
-        m3.metric("Max drawdown", f"{view['max_drawdown']:,.2f}")
-        m4.metric("Trades", view["total_trades"])
+        m1.metric("Realized PnL (EUR)", f"{view['realized_pnl_eur']:+,.2f}")
+        m2.metric("Unrealized PnL (EUR)", f"{view['unrealized_pnl_eur']:+,.2f}")
+        m3.metric("Total PnL (EUR)", f"{view['total_pnl_eur']:+,.2f}")
+        m4.metric("Net profit (EUR)", f"{view['net_profit_eur']:+,.2f}", f"{view['return_pct']:+.2f}%")
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Final portfolio (EUR)", f"{view['final_portfolio_eur']:,.2f}")
+        c2.metric("Cash at end", f"€{view['final_cash_eur']:,.2f}")
+        c3.metric("Shares at end", f"{view['final_shares']:,.0f}")
+        c4.metric("Trades", view["total_trades"])
+
+        c5, c6, c7 = st.columns(3)
+        c5.metric("Buy & hold profit (EUR)", f"{view['buy_and_hold_profit_eur']:+,.2f}")
+        c6.metric("Avg cost (if holding)", f"€{view.get('avg_cost_eur', 0):,.2f}")
+        c7.metric("Max drawdown (EUR)", f"{view['max_drawdown']:,.2f}")
+
+        if view.get("threshold_adjusted"):
+            st.info(
+                f"No trades at ε **{view['requested_threshold']:.2f}** "
+                f"(no buy signals on daily close). Re-ran at **{view['epsilon_threshold']:.2f}**."
+            )
+
+        if view.get("total_trades", 0) == 0:
+            max_abs = view.get("epsilon_max_abs", 0.0)
+            th = view.get("epsilon_threshold", params.epsilon_threshold)
+            suggested = view.get("suggested_threshold", 0.75)
+            blocked = view.get("buy_signals_blocked_by_regime", 0)
+            msg = (
+                f"No trades at ε threshold **{th:.2f}**. "
+                f"Test-period max |ε| is **{max_abs:.2f}** "
+                f"(buy signals: {view.get('buy_model_signals', 0)}, "
+                f"sell signals: {view.get('sell_model_signals', 0)}). "
+            )
+            if blocked > 0:
+                msg += (
+                    f"**{blocked}** buy day(s) had ε below threshold but **regime_valid=false** "
+                    f"(often zero volume on mutual-fund NAV feeds). "
+                )
+            msg += f"Daily UCITS data rarely reaches 2.0 — try **{suggested:.2f}** or lower in the sidebar."
+            st.warning(msg)
+            if st.button(f"Use suggested threshold ({suggested:.2f})"):
+                params.epsilon_threshold = suggested
+                st.session_state.params = params
+                st.rerun()
+
+        if isinstance(view.get("trade_chart"), pd.DataFrame) and not view["trade_chart"].empty:
+            st.line_chart(view["trade_chart"], x="time", y="epsilon")
+        if isinstance(view.get("pnl_curve"), pd.DataFrame) and not view["pnl_curve"].empty:
+            st.subheader("Realized vs unrealized PnL")
+            st.pyplot(pnl_with_trade_shares_chart(view["pnl_curve"]), clear_figure=True)
+            traded = view["pnl_curve"]
+            if {"shares_bought", "shares_sold"}.issubset(traded.columns):
+                total_bought = float(traded["shares_bought"].sum())
+                total_sold = float(traded["shares_sold"].sum())
+                st.caption(
+                    f"Test period: **{total_bought:,.0f}** shares bought, **{total_sold:,.0f}** shares sold "
+                    f"(bars on secondary axis)."
+                )
         if isinstance(view.get("equity_curve"), pd.DataFrame) and not view["equity_curve"].empty:
-            st.line_chart(view["equity_curve"], x="time", y="equity")
+            st.subheader("Portfolio value over test period")
+            st.line_chart(view["equity_curve"], x="time", y="portfolio_eur")
 
 with tab_trade:
     st.subheader(f"Trade — {params.symbol}")
@@ -109,7 +170,14 @@ with tab_trade:
 
         chart = series[["epsilon", "price"]].tail(120).reset_index()
         chart = chart.rename(columns={"index": "time"})
-        st.line_chart(chart, x="time", y=["epsilon", "price"])
+        st.pyplot(
+            price_epsilon_chart(
+                chart,
+                epsilon_threshold=params.epsilon_threshold,
+                price_label=f"Price ({settings.currency})",
+            ),
+            clear_figure=True,
+        )
 
     if st.button("Run model paper cycle"):
         results = detect_latest_perturbations(symbols=[params.symbol], settings=params.to_settings())

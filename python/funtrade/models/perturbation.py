@@ -9,7 +9,7 @@ import pandas as pd
 
 from funtrade.config import Settings
 from funtrade.data.factors import blend_epsilon, compute_h1_component_scores
-from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars, save_perturbation_event
+from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars, save_perturbation_event, upsert_perturbation_daily
 from funtrade.models.components import DEFAULT_H1_WEIGHTS, sector_etf_for
 from funtrade.models.equilibrium import EquilibriumModel, load_or_calibrate
 
@@ -121,8 +121,13 @@ def _compute_regime_validity(
     spike_mask = magnitude > spike_sigma
     consecutive_spikes = spike_mask.astype(int).rolling(consecutive_bars).sum() >= consecutive_bars
 
-    eur_volume = (price * volume.fillna(0.0)).rolling(20, min_periods=5).mean()
-    liquidity_halt = eur_volume < min_daily_volume_eur
+    vol = volume.fillna(0.0)
+    # NAV-priced mutual funds often report zero volume; skip liquidity gate when absent.
+    if min_daily_volume_eur > 0 and (vol > 0).any():
+        eur_volume = (price * vol).rolling(20, min_periods=5).mean()
+        liquidity_halt = eur_volume < min_daily_volume_eur
+    else:
+        liquidity_halt = pd.Series(False, index=magnitude.index)
 
     valid = ~(consecutive_spikes | liquidity_halt)
     return valid.fillna(True)
@@ -176,6 +181,7 @@ def detect_latest_perturbations(
             results.append(result)
 
             if persist:
+                upsert_perturbation_daily(symbol, series, settings=settings)
                 save_perturbation_event(
                     ts.to_pydatetime(),
                     symbol,
@@ -200,12 +206,18 @@ def signal_from_epsilon(
     current_position: float = 0.0,
 ) -> int:
     """Return +1 (buy), -1 (sell/exit), or 0 (flat). Mean-reversion on perturbation."""
-    if not regime_valid or abs(epsilon) <= threshold:
+    if abs(epsilon) <= threshold:
         return 0
-    if epsilon < -threshold:
-        return 1
+
     if epsilon > threshold:
         if long_only:
+            # Exit long when overvalued — allowed even if regime invalid (de-risk).
             return -1 if current_position > 0 else 0
+        if not regime_valid:
+            return 0
         return -1
-    return 0
+
+    # epsilon < -threshold: buy / add long only when regime is valid.
+    if not regime_valid:
+        return 0
+    return 1

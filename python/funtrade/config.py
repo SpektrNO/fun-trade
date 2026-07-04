@@ -24,6 +24,13 @@ def _load_env_file() -> None:
 _load_env_file()
 
 
+def _env_bool(key: str, default: bool = False) -> bool:
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass
 class Settings:
     database_url: str
@@ -34,6 +41,19 @@ class Settings:
     regime_spike_sigma: float
     regime_consecutive_bars: int
     min_daily_volume_eur: float
+    h0_weight_eur_rates: float
+    h0_weight_credit_spread: float
+    h0_weight_eur_usd: float
+    h0_weight_sector_beta: float
+    h0_enable_oil: bool
+    h0_oil_ticker: str
+    h0_weight_oil: float
+    h0_enable_climate: bool
+    h0_climate_mode: str
+    h0_climate_ticker: str
+    h0_climate_clean_ticker: str
+    h0_climate_fossil_ticker: str
+    h0_weight_climate: float
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -49,11 +69,47 @@ class Settings:
             watchlist=[s.strip() for s in watchlist_raw.split(",") if s.strip()],
             benchmark=os.getenv("BENCHMARK", "EXSA.DE"),
             currency=os.getenv("CURRENCY", "EUR"),
-            epsilon_threshold=float(os.getenv("EPSILON_THRESHOLD", "2.0")),
+            epsilon_threshold=float(os.getenv("EPSILON_THRESHOLD", "0.5")),
             regime_spike_sigma=float(os.getenv("REGIME_SPIKE_SIGMA", "3.0")),
             regime_consecutive_bars=int(os.getenv("REGIME_CONSECUTIVE_BARS", "3")),
             min_daily_volume_eur=float(os.getenv("MIN_DAILY_VOLUME_EUR", "100000")),
+            h0_weight_eur_rates=float(os.getenv("H0_WEIGHT_EUR_RATES", "0.15")),
+            h0_weight_credit_spread=float(os.getenv("H0_WEIGHT_CREDIT_SPREAD", "0.10")),
+            h0_weight_eur_usd=float(os.getenv("H0_WEIGHT_EUR_USD", "0.10")),
+            h0_weight_sector_beta=float(os.getenv("H0_WEIGHT_SECTOR_BETA", "-0.10")),
+            h0_enable_oil=_env_bool("H0_ENABLE_OIL", False),
+            h0_oil_ticker=os.getenv("H0_OIL_TICKER", "BZ=F"),
+            h0_weight_oil=float(os.getenv("H0_WEIGHT_OIL", "-0.08")),
+            h0_enable_climate=_env_bool("H0_ENABLE_CLIMATE", False),
+            h0_climate_mode=os.getenv("H0_CLIMATE_MODE", "spread").strip().lower(),
+            h0_climate_ticker=os.getenv("H0_CLIMATE_TICKER", "INRG.L"),
+            h0_climate_clean_ticker=os.getenv("H0_CLIMATE_CLEAN_TICKER", "INRG.L"),
+            h0_climate_fossil_ticker=os.getenv("H0_CLIMATE_FOSSIL_TICKER", "BZ=F"),
+            h0_weight_climate=float(os.getenv("H0_WEIGHT_CLIMATE", "0.06")),
         )
+
+    def active_h0_component_ids(self) -> tuple[str, ...]:
+        from funtrade.models.components import CORE_H0_COMPONENT_IDS
+
+        ids = list(CORE_H0_COMPONENT_IDS)
+        if self.h0_enable_oil:
+            ids.append("oil_price")
+        if self.h0_enable_climate:
+            ids.append("climate_transition")
+        return tuple(ids)
+
+    def h0_weights(self) -> dict[str, float]:
+        weights = {
+            "eur_rates": self.h0_weight_eur_rates,
+            "credit_spread": self.h0_weight_credit_spread,
+            "eur_usd": self.h0_weight_eur_usd,
+            "sector_beta": self.h0_weight_sector_beta,
+        }
+        if self.h0_enable_oil:
+            weights["oil_price"] = self.h0_weight_oil
+        if self.h0_enable_climate:
+            weights["climate_transition"] = self.h0_weight_climate
+        return weights
 
 
 def normalize_dsn(url: str) -> str:

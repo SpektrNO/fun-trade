@@ -11,16 +11,28 @@ import numpy as np
 import pandas as pd
 
 from funtrade.config import Settings
-from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars, save_backtest_run
+from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars, normalize_daily_bars, save_backtest_run
+from funtrade.execution.paper import _position_after_trade
 from funtrade.models.equilibrium import calibrate_equilibrium
 from funtrade.models.perturbation import compute_perturbation_series, signal_from_epsilon
 
 
-def _backtest_config() -> tuple[float, float, float]:
+def _daily_last_bars(frame: pd.DataFrame) -> pd.DataFrame:
+    """One row per calendar day (last bar) for daily backtest accounting."""
+    return normalize_daily_bars(frame)
+
+
+def _backtest_config() -> tuple[float, float, float, float]:
     fee_bps = float(os.getenv("BACKTEST_FEE_BPS", "5"))
     limit = float(os.getenv("BACKTEST_POSITION_LIMIT_SHARES", "1000"))
     trade_shares = float(os.getenv("BACKTEST_TRADE_SHARES", "10"))
-    return fee_bps, limit, trade_shares
+    initial_cash = float(
+        os.getenv(
+            "BACKTEST_INITIAL_CASH_EUR",
+            os.getenv("PAPER_INITIAL_CASH_EUR", "100000"),
+        )
+    )
+    return fee_bps, limit, trade_shares, initial_cash
 
 
 @dataclass
@@ -41,6 +53,57 @@ class BacktestResult:
     trade_signal: pd.Series
     regime_valid: pd.Series
     metrics: dict
+    realized_pnl: pd.Series
+    unrealized_pnl: pd.Series
+
+
+def _compute_portfolio_metrics(
+    portfolio_value: pd.Series,
+    trade_volumes: pd.Series,
+    *,
+    initial_capital: float,
+) -> dict:
+    if portfolio_value.empty:
+        return {
+            "sharpe": 0.0,
+            "max_drawdown": 0.0,
+            "hit_rate": 0.0,
+            "total_trades": 0,
+            "total_return": 0.0,
+            "net_profit_eur": 0.0,
+            "initial_capital_eur": initial_capital,
+            "final_portfolio_eur": initial_capital,
+            "return_pct": 0.0,
+        }
+
+    final_value = float(portfolio_value.iloc[-1])
+    net_profit = final_value - initial_capital
+    return_pct = (net_profit / initial_capital * 100.0) if initial_capital > 0 else 0.0
+
+    rolling_max = portfolio_value.cummax()
+    drawdown = portfolio_value - rolling_max
+    max_drawdown = float(drawdown.min()) if len(drawdown) else 0.0
+
+    daily_ret = portfolio_value.pct_change().fillna(0.0)
+    std = daily_ret.std()
+    sharpe = float(daily_ret.mean() / std * np.sqrt(252)) if std > 1e-9 else 0.0
+
+    trade_days = trade_volumes > 0
+    trade_pnl = daily_ret[trade_days] * portfolio_value.shift(1)[trade_days]
+    hit_rate = float((trade_pnl > 0).mean()) if len(trade_pnl) else 0.0
+    total_trades = int(trade_days.sum())
+
+    return {
+        "sharpe": sharpe,
+        "max_drawdown": max_drawdown,
+        "hit_rate": hit_rate,
+        "total_trades": total_trades,
+        "total_return": net_profit,
+        "net_profit_eur": net_profit,
+        "initial_capital_eur": initial_capital,
+        "final_portfolio_eur": final_value,
+        "return_pct": return_pct,
+    }
 
 
 def _compute_metrics(pnl: pd.Series, trades: pd.Series) -> dict:
@@ -79,17 +142,20 @@ def _compute_metrics(pnl: pd.Series, trades: pd.Series) -> dict:
 def run_backtest(
     symbol: str,
     *,
-    epsilon_threshold: float = 2.0,
+    epsilon_threshold: float | None = None,
     train_end: pd.Timestamp | None = None,
     test_start: pd.Timestamp | None = None,
     weights: tuple[float, float, float] = (0.35, 0.10, 0.25),
     fee_bps: float | None = None,
     position_limit_shares: float | None = None,
     trade_shares: float | None = None,
+    initial_cash_eur: float | None = None,
     settings: Settings | None = None,
     persist: bool = True,
 ) -> BacktestResult:
     settings = settings or Settings.from_env()
+    if epsilon_threshold is None:
+        epsilon_threshold = settings.epsilon_threshold
 
     all_data = load_price_bars(symbol, MARKET_ADJ_CLOSE, settings=settings)
     if all_data.empty or len(all_data) < 60:
@@ -107,6 +173,7 @@ def run_backtest(
         start=train_start,
         end=train_end,
         persist=False,
+        settings=settings,
     )
 
     series = compute_perturbation_series(
@@ -122,24 +189,36 @@ def run_backtest(
     if test.empty:
         raise ValueError(f"No test-period data after {test_start}")
 
-    price = test["price"].astype(float)
-    price_change = price.diff().fillna(0.0)
+    test = _daily_last_bars(test)
 
-    fee_bps_val, position_limit, trade_qty = _backtest_config()
+    price = test["price"].astype(float)
+
+    fee_bps_val, position_limit, trade_qty, initial_cash = _backtest_config()
     if fee_bps is not None:
         fee_bps_val = fee_bps
     if position_limit_shares is not None:
         position_limit = position_limit_shares
     if trade_shares is not None:
         trade_qty = trade_shares
+    if initial_cash_eur is not None:
+        initial_cash = initial_cash_eur
 
     signals = pd.Series(0, index=test.index, dtype=int)
     model_signals = pd.Series(0, index=test.index, dtype=int)
     positions = pd.Series(0.0, index=test.index, dtype=float)
+    cash_series = pd.Series(initial_cash, index=test.index, dtype=float)
+    portfolio_value = pd.Series(initial_cash, index=test.index, dtype=float)
     trade_volumes = pd.Series(0.0, index=test.index, dtype=float)
+    cash = initial_cash
     position = 0.0
+    avg_cost = 0.0
+    realized_pnl = 0.0
+    total_fees = 0.0
+    realized_series = pd.Series(0.0, index=test.index, dtype=float)
+    unrealized_series = pd.Series(0.0, index=test.index, dtype=float)
 
     for i, (_ts, row) in enumerate(test.iterrows()):
+        bar_price = float(price.iloc[i])
         raw = signal_from_epsilon(
             float(row["epsilon"]),
             epsilon_threshold,
@@ -150,28 +229,60 @@ def run_backtest(
         model_signals.iloc[i] = raw
         traded = 0.0
         if raw != 0:
-            delta = trade_qty if raw > 0 else -min(trade_qty, position)
-            new_pos = position + delta
-            if raw < 0 and position <= 0:
-                new_pos = position
-            if 0 <= new_pos <= position_limit:
-                signals.iloc[i] = raw
-                traded = abs(new_pos - position)
-                position = new_pos
+            if raw > 0:
+                delta = trade_qty
+                cost = delta * bar_price
+                fee = cost * (fee_bps_val / 10000.0)
+                if cash >= cost + fee and position + delta <= position_limit:
+                    position, avg_cost, realized_delta = _position_after_trade(
+                        position, avg_cost, "buy", delta, bar_price
+                    )
+                    realized_pnl += realized_delta
+                    cash -= cost + fee
+                    total_fees += fee
+                    signals.iloc[i] = raw
+                    traded = delta
+            else:
+                delta = min(trade_qty, position)
+                if delta > 0:
+                    proceeds = delta * bar_price
+                    fee = proceeds * (fee_bps_val / 10000.0)
+                    position, avg_cost, realized_delta = _position_after_trade(
+                        position, avg_cost, "sell", delta, bar_price
+                    )
+                    realized_pnl += realized_delta
+                    cash += proceeds - fee
+                    total_fees += fee
+                    signals.iloc[i] = raw
+                    traded = delta
         positions.iloc[i] = position
+        cash_series.iloc[i] = cash
         trade_volumes.iloc[i] = traded
+        portfolio_value.iloc[i] = cash + position * bar_price
+        realized_series.iloc[i] = realized_pnl
+        unrealized_series.iloc[i] = (
+            position * (bar_price - avg_cost) if position > 0 else 0.0
+        )
 
-    active_position = positions.shift(1).fillna(0.0)
-    strategy_returns = active_position * price_change
-    fees = trade_volumes * price * (fee_bps_val / 10000.0)
-    strategy_returns = strategy_returns - fees
+    last_price = float(price.iloc[-1])
+    unrealized_pnl = position * (last_price - avg_cost) if position > 0 else 0.0
+    total_pnl = realized_pnl + unrealized_pnl
 
-    metrics = _compute_metrics(strategy_returns, trade_volumes)
+    metrics = _compute_portfolio_metrics(
+        portfolio_value,
+        trade_volumes,
+        initial_capital=initial_cash,
+    )
     regime_invalidations = int((~test["regime_valid"]).sum())
 
-    equity = strategy_returns.cumsum()
-    monthly_pnl = strategy_returns.resample("ME").sum().to_dict()
+    equity = portfolio_value
+    monthly_pnl = portfolio_value.diff().fillna(0.0).resample("ME").sum().to_dict()
     monthly_pnl = {str(k): float(v) for k, v in monthly_pnl.items()}
+
+    first_price = float(price.iloc[0])
+    buy_hold_shares = initial_cash / first_price if first_price > 0 else 0.0
+    buy_hold_final = buy_hold_shares * last_price
+    buy_hold_profit = buy_hold_final - initial_cash
 
     full_metrics = {
         **metrics,
@@ -180,6 +291,15 @@ def run_backtest(
         "position_limit_shares": position_limit,
         "trade_shares": trade_qty,
         "total_traded_shares": float(trade_volumes.sum()),
+        "total_fees_eur": total_fees,
+        "realized_pnl_eur": realized_pnl,
+        "unrealized_pnl_eur": unrealized_pnl,
+        "total_pnl_eur": total_pnl,
+        "avg_cost_eur": avg_cost if position > 0 else 0.0,
+        "final_cash_eur": float(cash_series.iloc[-1]),
+        "final_shares": float(positions.iloc[-1]),
+        "buy_and_hold_final_eur": buy_hold_final,
+        "buy_and_hold_profit_eur": buy_hold_profit,
         "monthly_pnl": monthly_pnl,
     }
 
@@ -188,9 +308,11 @@ def run_backtest(
     if not bench.empty:
         bench_test = bench["price"].astype(float).reindex(test.index, method="ffill")
         if len(bench_test.dropna()) > 1:
-            bh_shares = 10000.0 / bench_test.iloc[0]
-            bh_pnl = bh_shares * bench_test.diff().fillna(0.0)
-            vs_benchmark = float(bh_pnl.sum()) - float(bh_pnl.iloc[0])
+            bench_first = float(bench_test.dropna().iloc[0])
+            bench_last = float(bench_test.dropna().iloc[-1])
+            if bench_first > 0:
+                bench_shares = initial_cash / bench_first
+                vs_benchmark = bench_shares * bench_last - initial_cash
 
     result = BacktestResult(
         symbol=symbol,
@@ -209,6 +331,8 @@ def run_backtest(
         trade_signal=signals,
         regime_valid=test["regime_valid"].astype(bool),
         metrics=full_metrics,
+        realized_pnl=realized_series,
+        unrealized_pnl=unrealized_series,
     )
 
     if persist:
@@ -229,7 +353,7 @@ def walk_forward_threshold_sweep(
     thresholds: list[float] | None = None,
     **kwargs,
 ) -> pd.DataFrame:
-    thresholds = thresholds or [1.0, 1.5, 2.0, 2.5, 3.0]
+    thresholds = thresholds or [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
     rows = []
     for threshold in thresholds:
         try:
@@ -260,19 +384,26 @@ def compare_to_buy_and_hold(symbol: str, **kwargs) -> dict:
         test_start = all_data.index[int(len(all_data) * 0.7)] if not all_data.empty else series.index[0]
     test = series[series.index >= test_start]
     price = test["price"].astype(float)
+    _, _, _, initial_cash = _backtest_config()
 
     bench = load_price_bars(settings.benchmark, MARKET_ADJ_CLOSE, settings=settings)
     bench_test = bench["price"].astype(float).reindex(test.index, method="ffill")
     bh_return = 0.0
     if len(bench_test.dropna()) > 1:
-        bh_shares = 10000.0 / bench_test.dropna().iloc[0]
-        bh_return = float((bh_shares * bench_test.diff().fillna(0.0)).sum())
+        bench_first = float(bench_test.dropna().iloc[0])
+        bench_last = float(bench_test.dropna().iloc[-1])
+        if bench_first > 0:
+            bh_return = (initial_cash / bench_first) * bench_last - initial_cash
 
     return {
         "symbol": symbol,
         "benchmark": settings.benchmark,
+        "initial_capital_eur": initial_cash,
+        "strategy_net_profit_eur": result.metrics.get("net_profit_eur", result.total_return),
+        "strategy_final_portfolio_eur": result.metrics.get("final_portfolio_eur"),
+        "strategy_return_pct": result.metrics.get("return_pct", 0.0),
         "strategy_return": result.total_return,
-        "buy_and_hold_benchmark_return": bh_return,
+        "buy_and_hold_benchmark_profit_eur": bh_return,
         "strategy_sharpe": result.sharpe,
         "strategy_max_drawdown": result.max_drawdown,
     }

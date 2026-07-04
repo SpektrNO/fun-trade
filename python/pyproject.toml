@@ -31,6 +31,7 @@ funtrade-reconcile = "funtrade.cli:reconcile"
 funtrade-paper = "funtrade.paper.runner:main"
 funtrade-seed = "funtrade.data.seed_demo:main"
 funtrade-components = "funtrade.cli:components"
+funtrade-symbols = "funtrade.cli:symbols"
 funtrade-ui = "funtrade.ui.launch:main"
 
 [build-system]

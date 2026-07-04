@@ -18,38 +18,62 @@ from funtrade.config import Settings
 from funtrade.data.factors import ingest_macro_factors
 from funtrade.data.ingest import ingest_watchlist
 from funtrade.data.reconcile import reconcile_symbol
-from funtrade.models.components import H0_COMPONENTS, H1_COMPONENTS
+from funtrade.data.symbols import alias_catalog
+from funtrade.models.components import ALL_H0_COMPONENTS, H1_COMPONENTS, OPTIONAL_H0_COMPONENTS
 from funtrade.models.equilibrium import calibrate_equilibrium
 from funtrade.models.perturbation import detect_latest_perturbations
 from funtrade.sensitivity.jacobian import compute_jacobian, tune_weights_from_jacobian
 
 
+def _calibrate_summary(model) -> dict:
+    return {
+        "symbol": model.symbol,
+        "kappa": model.kappa,
+        "mu": model.mu,
+        "sigma": model.sigma,
+        "half_life_days": model.half_life_days,
+        "seasonal_r_squared": model.seasonal_coeffs.get("r_squared"),
+    }
+
+
 def calibrate(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Calibrate H0 equilibrium model")
-    parser.add_argument("--symbol", default="VWCE.DE")
-    parser.add_argument("--start", default="2020-01-01")
+    parser.add_argument("--symbol", default=None, help="Single symbol (default: VWCE.DE)")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Calibrate every symbol in WATCHLIST",
+    )
+    parser.add_argument("--start", default=None, help="Calibration window start (default: H0_CALIBRATION_DAYS lookback)")
     parser.add_argument("--end", default=None)
     args = parser.parse_args(argv)
 
+    settings = Settings.from_env()
+    if args.all:
+        symbols = settings.watchlist
+    elif args.symbol:
+        symbols = [args.symbol]
+    else:
+        symbols = ["VWCE.DE"]
+
+    start = pd.Timestamp(args.start, tz="UTC") if args.start else None
     end = pd.Timestamp(args.end, tz="UTC") if args.end else None
-    model = calibrate_equilibrium(
-        args.symbol,
-        start=pd.Timestamp(args.start, tz="UTC"),
-        end=end,
-    )
-    print(
-        json.dumps(
-            {
-                "symbol": model.symbol,
-                "kappa": model.kappa,
-                "mu": model.mu,
-                "sigma": model.sigma,
-                "half_life_days": model.half_life_days,
-                "seasonal_r_squared": model.seasonal_coeffs.get("r_squared"),
-            },
-            indent=2,
-        )
-    )
+
+    calibrated: list[dict] = []
+    errors: dict[str, str] = {}
+    for symbol in symbols:
+        try:
+            model = calibrate_equilibrium(symbol, start=start, end=end, settings=settings)
+            calibrated.append(_calibrate_summary(model))
+        except Exception as exc:
+            errors[symbol] = str(exc)
+
+    payload: dict = {"calibrated": calibrated}
+    if errors:
+        payload["errors"] = errors
+    print(json.dumps(payload, indent=2))
+    if errors and not calibrated:
+        sys.exit(1)
 
 
 def detect(argv: list[str] | None = None) -> None:
@@ -107,16 +131,27 @@ def backtest(argv: list[str] | None = None) -> None:
         return
 
     result = run_backtest(args.symbol, epsilon_threshold=args.threshold)
+    m = result.metrics
     print(
         json.dumps(
             {
                 "symbol": result.symbol,
                 "epsilon_threshold": result.epsilon_threshold,
+                "initial_capital_eur": m.get("initial_capital_eur"),
+                "final_portfolio_eur": m.get("final_portfolio_eur"),
+                "net_profit_eur": m.get("net_profit_eur", result.total_return),
+                "return_pct": m.get("return_pct"),
+                "realized_pnl_eur": m.get("realized_pnl_eur"),
+                "unrealized_pnl_eur": m.get("unrealized_pnl_eur"),
+                "total_pnl_eur": m.get("total_pnl_eur"),
+                "total_fees_eur": m.get("total_fees_eur"),
+                "buy_and_hold_profit_eur": m.get("buy_and_hold_profit_eur"),
                 "sharpe": result.sharpe,
                 "max_drawdown": result.max_drawdown,
                 "hit_rate": result.hit_rate,
                 "total_trades": result.total_trades,
-                "total_return": result.total_return,
+                "final_cash_eur": m.get("final_cash_eur"),
+                "final_shares": m.get("final_shares"),
                 "regime_invalidations": result.regime_invalidations,
             },
             indent=2,
@@ -188,13 +223,44 @@ def reconcile(argv: list[str] | None = None) -> None:
     )
 
 
+def symbols(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="List WATCHLIST symbol aliases (ISIN / friendly name → fetch ticker)")
+    parser.parse_args(argv)
+    settings = Settings.from_env()
+    rows = []
+    for alias in alias_catalog():
+        watchlist_id = alias["watchlist_id"]
+        rows.append(
+            {
+                **alias,
+                "in_watchlist": watchlist_id in settings.watchlist
+                or watchlist_id.upper() in {s.upper() for s in settings.watchlist},
+            }
+        )
+    print(json.dumps({"aliases": rows, "watchlist": settings.watchlist}, indent=2))
+
+
 def components(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="List H0/H1 component variables")
     parser.parse_args(argv)
+    settings = Settings.from_env()
+    weights = settings.h0_weights()
+    active_ids = set(settings.active_h0_component_ids())
+    optional_ids = {c.id for c in OPTIONAL_H0_COMPONENTS}
     print(
         json.dumps(
             {
-                "h0": [{"id": c.id, "name": c.name, "description": c.description} for c in H0_COMPONENTS],
+                "h0": [
+                    {
+                        "id": c.id,
+                        "name": c.name,
+                        "description": c.description,
+                        "enabled": c.id in active_ids,
+                        "optional": c.id in optional_ids,
+                        "weight": weights.get(c.id),
+                    }
+                    for c in ALL_H0_COMPONENTS
+                ],
                 "h1": [{"id": c.id, "name": c.name, "description": c.description} for c in H1_COMPONENTS],
             },
             indent=2,
@@ -216,6 +282,7 @@ def main() -> None:
         "ingest-factors": ingest_factors,
         "reconcile": reconcile,
         "components": components,
+        "symbols": symbols,
     }
     cmd = sys.argv[1]
     if cmd not in commands:

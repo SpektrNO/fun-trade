@@ -20,6 +20,13 @@ class ComponentVariable:
     unit: str
 
 
+CORE_H0_COMPONENT_IDS: tuple[str, ...] = (
+    "eur_rates",
+    "credit_spread",
+    "eur_usd",
+    "sector_beta",
+)
+
 H0_COMPONENTS: tuple[ComponentVariable, ...] = (
     ComponentVariable(
         "eur_rates",
@@ -47,6 +54,23 @@ H0_COMPONENTS: tuple[ComponentVariable, ...] = (
         "Sector Beta Residual",
         ComponentRole.H0,
         "Rolling OLS residual vs benchmark ETF.",
+        "ratio",
+    ),
+)
+
+OPTIONAL_H0_COMPONENTS: tuple[ComponentVariable, ...] = (
+    ComponentVariable(
+        "oil_price",
+        "Oil Price",
+        ComponentRole.H0,
+        "Brent/WTI or oil ETF; shifts inflation/growth fair value when enabled.",
+        "usd",
+    ),
+    ComponentVariable(
+        "climate_transition",
+        "Climate Transition",
+        ComponentRole.H0,
+        "Clean-energy vs fossil spread or single clean-energy proxy when enabled.",
         "ratio",
     ),
 )
@@ -82,7 +106,8 @@ H1_COMPONENTS: tuple[ComponentVariable, ...] = (
     ),
 )
 
-ALL_COMPONENTS = {c.id: c for c in (*H0_COMPONENTS, *H1_COMPONENTS)}
+ALL_H0_COMPONENTS = (*H0_COMPONENTS, *OPTIONAL_H0_COMPONENTS)
+ALL_COMPONENTS = {c.id: c for c in (*ALL_H0_COMPONENTS, *H1_COMPONENTS)}
 
 # Per-symbol sector/benchmark ETF for relative strength
 SECTOR_ETF_MAP: dict[str, str] = {
@@ -92,6 +117,9 @@ SECTOR_ETF_MAP: dict[str, str] = {
     "SXR8.DE": "EXSA.DE",
     "AGGH.DE": "IBCI.DE",
     "IBCI.DE": "EXSA.DE",
+    # Norwegian mutual funds (Nordic equity → broad Europe benchmark)
+    "NO0010336977": "EXSA.DE",
+    "DNB-BARNE.IR": "EXSA.DE",
 }
 
 DEFAULT_H1_WEIGHTS: dict[str, float] = {
