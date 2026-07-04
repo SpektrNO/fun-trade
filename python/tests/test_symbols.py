@@ -13,6 +13,11 @@ def test_resolve_fetch_ticker_friendly_name():
     assert resolve_fetch_ticker("DNB-BARNE.IR") == "0P00000O4C.IR"
 
 
+def test_resolve_fetch_ticker_futures():
+    assert resolve_fetch_ticker("BZ=F") == "BZ=F"
+    assert resolve_fetch_ticker("CL=F") == "CL=F"
+
+
 def test_resolve_fetch_ticker_xetra_default():
     assert resolve_fetch_ticker("VWCE.DE") == "VWCE.DE"
     assert resolve_fetch_ticker("VWCE") == "VWCE.DE"

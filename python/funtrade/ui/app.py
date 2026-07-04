@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+from dataclasses import replace
 
 from funtrade.config import Settings
 from funtrade.execution.paper import (
@@ -30,6 +31,13 @@ if "params" not in st.session_state:
     st.session_state.params = default_ui_params(settings.watchlist[0] if settings.watchlist else "VWCE.DE")
 
 params = st.session_state.params
+if not hasattr(params, "h0_weight_oil"):
+    params = replace(
+        params,
+        h0_weight_oil=settings.h0_weight_oil,
+        h0_weight_climate=settings.h0_weight_climate,
+    )
+    st.session_state.params = params
 
 st.sidebar.title("FunTrade")
 params.symbol = st.sidebar.selectbox("Symbol", settings.watchlist, index=settings.watchlist.index(params.symbol) if params.symbol in settings.watchlist else 0)
@@ -37,6 +45,27 @@ params.epsilon_threshold = st.sidebar.slider("ε threshold", 0.3, 3.0, float(par
 params.w_return = st.sidebar.slider("w_return", 0.0, 1.0, float(params.w_return), 0.05)
 params.w_volume = st.sidebar.slider("w_volume", 0.0, 1.0, float(params.w_volume), 0.05)
 params.w_rel_strength = st.sidebar.slider("w_rel_strength", 0.0, 1.0, float(params.w_rel_strength), 0.05)
+
+if settings.h0_enable_oil or settings.h0_enable_climate:
+    st.sidebar.markdown("**H₀ macro weights**")
+if settings.h0_enable_oil:
+    params.h0_weight_oil = st.sidebar.slider(
+        "H₀ weight oil",
+        -0.30,
+        0.30,
+        float(params.h0_weight_oil),
+        0.01,
+        help="Shifts fair value with oil z-score (negative = high oil lowers equity fair value).",
+    )
+if settings.h0_enable_climate:
+    params.h0_weight_climate = st.sidebar.slider(
+        "H₀ weight climate",
+        -0.30,
+        0.30,
+        float(params.h0_weight_climate),
+        0.01,
+        help="Shifts fair value with climate-transition z-score (spread or ETF proxy).",
+    )
 
 tab_wallet, tab_backtest, tab_trade = st.tabs(["Wallet", "Backtest", "Trade"])
 

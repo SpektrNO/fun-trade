@@ -26,6 +26,8 @@ class UiParams:
     paper_trade_shares: float
     paper_fee_bps: float
     paper_position_limit_shares: float
+    h0_weight_oil: float
+    h0_weight_climate: float
 
     def to_settings(self) -> Settings:
         base = Settings.from_env()
@@ -34,6 +36,8 @@ class UiParams:
             epsilon_threshold=self.epsilon_threshold,
             regime_spike_sigma=self.regime_spike_sigma,
             regime_consecutive_bars=self.regime_consecutive_bars,
+            h0_weight_oil=self.h0_weight_oil,
+            h0_weight_climate=self.h0_weight_climate,
         )
 
     def to_paper_settings(self) -> PaperSettings:
@@ -65,6 +69,8 @@ def default_ui_params(symbol: str = "VWCE.DE") -> UiParams:
         paper_trade_shares=p.trade_shares,
         paper_fee_bps=p.fee_bps,
         paper_position_limit_shares=p.position_limit_shares,
+        h0_weight_oil=s.h0_weight_oil,
+        h0_weight_climate=s.h0_weight_climate,
     )
 
 
