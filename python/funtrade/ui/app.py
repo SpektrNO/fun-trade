@@ -18,10 +18,15 @@ from funtrade.models.equilibrium import calibrate_equilibrium
 from funtrade.models.perturbation import detect_latest_perturbations, signal_from_epsilon, trend_signal_kwargs
 from funtrade.ui.charts import pnl_with_trade_shares_chart, price_epsilon_chart
 from funtrade.ui.service import (
+    CHART_WINDOW_BACKTEST_TEST,
+    CHART_WINDOW_RECENT,
+    H0_SOURCE_SAVED,
+    H0_SOURCE_WALK_FORWARD,
+    active_equilibrium_status,
     default_ui_params,
-    equilibrium_status,
     perturbation_context,
     run_backtest_for_ui,
+    slice_perturbation_for_chart,
 )
 
 st.set_page_config(page_title="FunTrade Console", page_icon="📈", layout="wide")
@@ -31,9 +36,9 @@ if "params" not in st.session_state:
     st.session_state.params = default_ui_params(settings.watchlist[0] if settings.watchlist else "VWCE.DE")
 
 params = st.session_state.params
+_migrate: dict = {}
 if not hasattr(params, "h0_weight_oil"):
-    params = replace(
-        params,
+    _migrate.update(
         h0_weight_oil=settings.h0_weight_oil,
         h0_weight_climate=settings.h0_weight_climate,
         trend_epsilon_weight=settings.trend_epsilon_weight,
@@ -41,6 +46,10 @@ if not hasattr(params, "h0_weight_oil"):
         trend_gate_sells=settings.trend_gate_sells,
         trend_gate_z=settings.trend_gate_z,
     )
+if not hasattr(params, "h0_source"):
+    _migrate.update(h0_source=H0_SOURCE_SAVED, epsilon_chart_window=CHART_WINDOW_RECENT)
+if _migrate:
+    params = replace(params, **_migrate)
     st.session_state.params = params
 
 st.sidebar.title("FunTrade")
@@ -103,6 +112,31 @@ if settings.trend_enable:
         disabled=not params.trend_gate_sells,
     )
 
+st.sidebar.markdown("**ε chart alignment**")
+_h0_labels = {
+    H0_SOURCE_SAVED: "Saved H₀ (DB / Trade)",
+    H0_SOURCE_WALK_FORWARD: "Walk-forward H₀ (train 70%)",
+}
+params.h0_source = st.sidebar.radio(
+    "H₀ source",
+    options=[H0_SOURCE_SAVED, H0_SOURCE_WALK_FORWARD],
+    format_func=lambda k: _h0_labels[k],
+    index=0 if params.h0_source == H0_SOURCE_SAVED else 1,
+    help="Use the same source on both tabs to compare ε apples-to-apples.",
+)
+_chart_labels = {
+    CHART_WINDOW_RECENT: "Last 120 days",
+    CHART_WINDOW_BACKTEST_TEST: "Backtest test period (~30%)",
+}
+params.epsilon_chart_window = st.sidebar.radio(
+    "ε chart window",
+    options=[CHART_WINDOW_RECENT, CHART_WINDOW_BACKTEST_TEST],
+    format_func=lambda k: _chart_labels[k],
+    index=0 if params.epsilon_chart_window == CHART_WINDOW_RECENT else 1,
+    help="Backtest always simulates on the test slice; this controls the Trade chart range.",
+)
+st.session_state.params = params
+
 tab_wallet, tab_backtest, tab_trade = st.tabs(["Wallet", "Backtest", "Trade"])
 
 with tab_wallet:
@@ -131,11 +165,14 @@ with tab_wallet:
 
 with tab_backtest:
     st.subheader(f"Backtest — {params.symbol}")
-    h0 = equilibrium_status(params.symbol, settings=params.to_settings())
+    h0 = active_equilibrium_status(
+        params.symbol, h0_source=params.h0_source, settings=params.to_settings(),
+    )
     if h0:
+        st.caption(f"H₀ used for ε: **{h0['source']}**")
         st.json(h0)
     else:
-        st.warning("No calibrated H₀ params. Run calibrate first.")
+        st.warning("No H₀ params for this source. Run calibrate first (saved mode).")
 
     if st.button("Run backtest"):
         try:
@@ -198,6 +235,12 @@ with tab_backtest:
                 st.rerun()
 
         if isinstance(view.get("trade_chart"), pd.DataFrame) and not view["trade_chart"].empty:
+            h0_label = "saved" if view.get("h0_source") == H0_SOURCE_SAVED else "walk-forward"
+            st.caption(
+                f"ε chart: **test period** from **{h0_label}** H₀ "
+                f"(from {view.get('test_start', '?')}). "
+                "Match Trade tab: same H₀ source + “Backtest test period” window."
+            )
             st.line_chart(view["trade_chart"], x="time", y="epsilon")
         if isinstance(view.get("pnl_curve"), pd.DataFrame) and not view["pnl_curve"].empty:
             st.subheader("Realized vs unrealized PnL")
@@ -227,15 +270,28 @@ with tab_trade:
         params.symbol,
         weights=params.perturbation_weights(),
         settings=params.to_settings(),
+        h0_source=params.h0_source,
     )
     if not series.empty:
-        latest = series.iloc[-1]
+        chart_series = slice_perturbation_for_chart(
+            series,
+            symbol=params.symbol,
+            window=params.epsilon_chart_window,
+            settings=params.to_settings(),
+        )
+        h0 = active_equilibrium_status(
+            params.symbol, h0_source=params.h0_source, settings=params.to_settings(),
+        )
+        if h0:
+            st.caption(f"H₀ for ε: **{h0['source']}** · chart: **{_chart_labels[params.epsilon_chart_window]}**")
+
+        latest = chart_series.iloc[-1]
         st.metric("ε", f"{latest['epsilon']:.3f}")
         st.metric("Regime valid", "Yes" if latest["regime_valid"] else "No")
         if settings.trend_enable:
             st.metric("z_trend", f"{latest.get('z_trend', 0.0):.2f}")
 
-        chart = series[["epsilon", "price"]].tail(120).reset_index()
+        chart = chart_series[["epsilon", "price"]].reset_index()
         chart = chart.rename(columns={"index": "time"})
         st.pyplot(
             price_epsilon_chart(

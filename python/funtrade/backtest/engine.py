@@ -13,8 +13,38 @@ import pandas as pd
 from funtrade.config import Settings
 from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars, normalize_daily_bars, save_backtest_run
 from funtrade.execution.paper import _position_after_trade
-from funtrade.models.equilibrium import calibrate_equilibrium
+from funtrade.models.equilibrium import EquilibriumModel, calibrate_equilibrium, load_or_calibrate
 from funtrade.models.perturbation import compute_perturbation_series, signal_from_epsilon, trend_signal_kwargs
+
+H0_SOURCE_SAVED = "saved"
+H0_SOURCE_WALK_FORWARD = "walk_forward"
+
+
+def backtest_train_test_split(index: pd.DatetimeIndex) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Default 70/30 walk-forward split (train_end == test_start)."""
+    train_end = index[int(len(index) * 0.7)]
+    return train_end, train_end
+
+
+def resolve_h0_equilibrium(
+    symbol: str,
+    *,
+    h0_source: str,
+    all_data: pd.DataFrame,
+    settings: Settings,
+) -> EquilibriumModel:
+    """Saved H₀ from DB (Trade tab default) or walk-forward fit on the train slice."""
+    if h0_source == H0_SOURCE_SAVED:
+        return load_or_calibrate(symbol, settings=settings)
+    train_start = all_data.index[0]
+    train_end, _ = backtest_train_test_split(all_data.index)
+    return calibrate_equilibrium(
+        symbol,
+        start=train_start,
+        end=train_end,
+        persist=False,
+        settings=settings,
+    )
 
 
 def _daily_last_bars(frame: pd.DataFrame) -> pd.DataFrame:
@@ -55,6 +85,9 @@ class BacktestResult:
     metrics: dict
     realized_pnl: pd.Series
     unrealized_pnl: pd.Series
+    h0_source: str = H0_SOURCE_WALK_FORWARD
+    test_start: pd.Timestamp | None = None
+    equilibrium_half_life_days: float | None = None
 
 
 def _compute_portfolio_metrics(
@@ -152,6 +185,7 @@ def run_backtest(
     initial_cash_eur: float | None = None,
     settings: Settings | None = None,
     persist: bool = True,
+    h0_source: str = H0_SOURCE_WALK_FORWARD,
 ) -> BacktestResult:
     settings = settings or Settings.from_env()
     if epsilon_threshold is None:
@@ -161,18 +195,16 @@ def run_backtest(
     if all_data.empty or len(all_data) < 60:
         raise ValueError(f"No data for backtest in symbol {symbol}")
 
+    default_train_end, default_test_start = backtest_train_test_split(all_data.index)
     if train_end is None:
-        train_end = all_data.index[int(len(all_data) * 0.7)]
+        train_end = default_train_end
     if test_start is None:
-        test_start = train_end
+        test_start = default_test_start
 
-    train_start = all_data.index[0]
-
-    equilibrium = calibrate_equilibrium(
+    equilibrium = resolve_h0_equilibrium(
         symbol,
-        start=train_start,
-        end=train_end,
-        persist=False,
+        h0_source=h0_source,
+        all_data=all_data,
         settings=settings,
     )
 
@@ -334,6 +366,9 @@ def run_backtest(
         metrics=full_metrics,
         realized_pnl=realized_series,
         unrealized_pnl=unrealized_series,
+        h0_source=h0_source,
+        test_start=test_start,
+        equilibrium_half_life_days=float(getattr(equilibrium, "half_life_days", 0.0) or 0.0),
     )
 
     if persist:
@@ -382,7 +417,10 @@ def compare_to_buy_and_hold(symbol: str, **kwargs) -> dict:
     test_start = kwargs.get("test_start")
     if test_start is None:
         all_data = load_price_bars(symbol, MARKET_ADJ_CLOSE)
-        test_start = all_data.index[int(len(all_data) * 0.7)] if not all_data.empty else series.index[0]
+        if not all_data.empty:
+            _, test_start = backtest_train_test_split(all_data.index)
+        else:
+            test_start = series.index[0]
     test = series[series.index >= test_start]
     price = test["price"].astype(float)
     _, _, _, initial_cash = _backtest_config()

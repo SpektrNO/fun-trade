@@ -6,11 +6,20 @@ from dataclasses import dataclass, replace
 
 import pandas as pd
 
-from funtrade.backtest.engine import run_backtest
+from funtrade.backtest.engine import (
+    H0_SOURCE_SAVED,
+    H0_SOURCE_WALK_FORWARD,
+    backtest_train_test_split,
+    resolve_h0_equilibrium,
+    run_backtest,
+)
 from funtrade.config import Settings
-from funtrade.data.loader import load_latest_equilibrium_params
+from funtrade.data.loader import MARKET_ADJ_CLOSE, load_latest_equilibrium_params, load_price_bars
 from funtrade.execution.paper import PaperSettings
 from funtrade.models.perturbation import compute_perturbation_series, detect_latest_perturbations, signal_from_epsilon
+
+CHART_WINDOW_RECENT = "recent_120"
+CHART_WINDOW_BACKTEST_TEST = "backtest_test"
 
 
 @dataclass
@@ -32,6 +41,8 @@ class UiParams:
     trend_fair_value_weight: float
     trend_gate_sells: bool
     trend_gate_z: float
+    h0_source: str
+    epsilon_chart_window: str
 
     def to_settings(self) -> Settings:
         base = Settings.from_env()
@@ -83,6 +94,8 @@ def default_ui_params(symbol: str = "VWCE.DE") -> UiParams:
         trend_fair_value_weight=s.trend_fair_value_weight,
         trend_gate_sells=s.trend_gate_sells,
         trend_gate_z=s.trend_gate_z,
+        h0_source=H0_SOURCE_SAVED,
+        epsilon_chart_window=CHART_WINDOW_RECENT,
     )
 
 
@@ -91,6 +104,7 @@ def equilibrium_status(symbol: str, *, settings: Settings | None = None) -> dict
     if params is None:
         return None
     return {
+        "source": "saved",
         "kappa": params["kappa"],
         "mu": params["mu"],
         "sigma": params["sigma"],
@@ -99,14 +113,84 @@ def equilibrium_status(symbol: str, *, settings: Settings | None = None) -> dict
     }
 
 
+def active_equilibrium_status(
+    symbol: str,
+    *,
+    h0_source: str,
+    settings: Settings | None = None,
+) -> dict | None:
+    """H₀ params that will be used for ε given the selected source."""
+    settings = settings or Settings.from_env()
+    bars = load_price_bars(symbol, MARKET_ADJ_CLOSE, settings=settings)
+    if bars.empty:
+        return None
+    try:
+        model = resolve_h0_equilibrium(symbol, h0_source=h0_source, all_data=bars, settings=settings)
+    except ValueError:
+        return None
+    status = {
+        "source": "saved (DB)" if h0_source == H0_SOURCE_SAVED else "walk-forward (train 70%)",
+        "kappa": model.kappa,
+        "mu": model.mu,
+        "sigma": model.sigma,
+        "half_life_days": model.half_life_days,
+    }
+    if h0_source == H0_SOURCE_SAVED:
+        saved = load_latest_equilibrium_params(symbol, settings=settings)
+        if saved:
+            status["calibrated_at"] = str(saved["calibrated_at"])
+    else:
+        train_end, _ = backtest_train_test_split(bars.index)
+        status["train_end"] = str(train_end)
+    return status
+
+
+def backtest_test_start(symbol: str, *, settings: Settings | None = None) -> pd.Timestamp | None:
+    settings = settings or Settings.from_env()
+    bars = load_price_bars(symbol, MARKET_ADJ_CLOSE, settings=settings)
+    if bars.empty:
+        return None
+    _, test_start = backtest_train_test_split(bars.index)
+    return test_start
+
+
+def slice_perturbation_for_chart(
+    series: pd.DataFrame,
+    *,
+    symbol: str,
+    window: str,
+    settings: Settings | None = None,
+) -> pd.DataFrame:
+    """Filter ε series for chart display (Trade tab vs backtest test window)."""
+    if series.empty:
+        return series
+    if window == CHART_WINDOW_BACKTEST_TEST:
+        test_start = backtest_test_start(symbol, settings=settings)
+        if test_start is not None:
+            sliced = series[series.index >= test_start]
+            if not sliced.empty:
+                return sliced
+    return series.tail(120)
+
+
 def perturbation_context(
     symbol: str,
     *,
     weights: tuple[float, float, float] = (0.35, 0.10, 0.25),
     settings: Settings | None = None,
+    h0_source: str = H0_SOURCE_SAVED,
 ) -> pd.DataFrame:
     settings = settings or Settings.from_env()
-    return compute_perturbation_series(symbol, weights=weights, settings=settings)
+    equilibrium = None
+    if h0_source == H0_SOURCE_WALK_FORWARD:
+        bars = load_price_bars(symbol, MARKET_ADJ_CLOSE, settings=settings)
+        if not bars.empty:
+            equilibrium = resolve_h0_equilibrium(
+                symbol, h0_source=h0_source, all_data=bars, settings=settings,
+            )
+    return compute_perturbation_series(
+        symbol, weights=weights, settings=settings, equilibrium=equilibrium,
+    )
 
 
 def suggest_epsilon_threshold(epsilon: pd.Series, *, quantile: float = 0.75) -> float:
@@ -137,6 +221,7 @@ def run_backtest_for_ui(params: UiParams) -> dict:
         initial_cash_eur=params.paper_initial_cash,
         settings=settings,
         persist=False,
+        h0_source=params.h0_source,
     )
     eps = result.epsilon.astype(float)
     suggested = suggest_epsilon_threshold(eps)
@@ -150,6 +235,7 @@ def run_backtest_for_ui(params: UiParams) -> dict:
             initial_cash_eur=params.paper_initial_cash,
             settings=settings,
             persist=False,
+            h0_source=params.h0_source,
         )
         eps = result.epsilon.astype(float)
         effective_threshold = suggested
@@ -173,6 +259,9 @@ def run_backtest_for_ui(params: UiParams) -> dict:
         "buy_signals_with_regime": buy_with_regime,
         "buy_signals_blocked_by_regime": buy_blocked_regime,
         "regime_invalid_days": int((~regime).sum()),
+        "h0_source": result.h0_source,
+        "test_start": str(result.test_start) if result.test_start is not None else None,
+        "equilibrium_half_life_days": result.equilibrium_half_life_days,
         "initial_capital_eur": m.get("initial_capital_eur", params.paper_initial_cash),
         "final_portfolio_eur": m.get("final_portfolio_eur", params.paper_initial_cash),
         "net_profit_eur": m.get("net_profit_eur", result.total_return),
