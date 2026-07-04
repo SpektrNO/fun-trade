@@ -1,0 +1,39 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: funtrade-timescaledb
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-funtrade}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-funtrade}
+      POSTGRES_DB: ${POSTGRES_DB:-funtrade}
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      - ./sql/001_init_schema.sql:/docker-entrypoint-initdb.d/001_init_schema.sql:ro
+      - ./sql/002_paper_trading.sql:/docker-entrypoint-initdb.d/002_paper_trading.sql:ro
+      - ./sql/003_factor_signals.sql:/docker-entrypoint-initdb.d/003_factor_signals.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-funtrade} -d ${POSTGRES_DB:-funtrade}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: funtrade-grafana
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+
+volumes:
+  timescaledb_data:
+  grafana_data:
