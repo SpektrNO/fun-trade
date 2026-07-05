@@ -468,4 +468,7 @@ def run_backtest_for_ui(params: UiParams) -> dict:
                 "trade_signal": result.trade_signal.values,
             }
         ),
+        "price_chart": pd.DataFrame(
+            {"time": result.price.index, "price": result.price.values}
+        ),
     }

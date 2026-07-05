@@ -1,7 +1,12 @@
 import numpy as np
 import pandas as pd
 
-from funtrade.models.equilibrium import _fit_ou_parameters, _fit_seasonality
+from funtrade.models.equilibrium import (
+    EquilibriumModel,
+    _fit_ou_parameters,
+    _fit_seasonality,
+    _seasonal_values,
+)
 from funtrade.models.perturbation import signal_from_epsilon, _compute_regime_validity, _compute_z_trend
 
 
@@ -82,5 +87,16 @@ def test_fit_seasonality_daily_returns_coefficients():
     coeffs = _fit_seasonality(log_prices)
     assert "intercept" in coeffs
     assert "dow_dummies" in coeffs
-    assert "month_dummies" in coeffs
+    assert "fourier_annual" in coeffs
+    assert coeffs["fourier_annual"]["K"] >= 1
     assert "r_squared" in coeffs
+
+
+def test_fourier_seasonality_is_continuous_across_month_boundary():
+    index = pd.date_range("2026-06-28", "2026-07-03", freq="D", tz="UTC")
+    log_prices = pd.Series(np.linspace(5.0, 5.05, len(index)), index=index)
+    coeffs = _fit_seasonality(log_prices)
+    season = _seasonal_values(index, coeffs)
+    jun30 = season[index.get_loc("2026-06-30")]
+    jul1 = season[index.get_loc("2026-07-01")]
+    assert abs(jul1 - jun30) < 0.02

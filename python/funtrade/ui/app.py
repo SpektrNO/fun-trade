@@ -274,6 +274,13 @@ with tab_backtest:
                 "Match Trade tab: same H₀ source + “Backtest test period” window."
             )
             chart_renderer.render_time_series(view["trade_chart"], x="time", y="epsilon")
+        if isinstance(view.get("price_chart"), pd.DataFrame) and not view["price_chart"].empty:
+            chart_renderer.render_time_series(
+                view["price_chart"],
+                x="time",
+                y="price",
+                title=f"Price ({settings.currency}) — test period",
+            )
         if isinstance(view.get("pnl_curve"), pd.DataFrame) and not view["pnl_curve"].empty:
             st.subheader("Realized vs unrealized PnL")
             chart_renderer.render_pnl_with_trades(view["pnl_curve"])

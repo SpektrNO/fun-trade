@@ -76,6 +76,7 @@ class BacktestResult:
     total_return: float
     regime_invalidations: int
     equity_curve: pd.Series
+    price: pd.Series
     position_shares: pd.Series
     trade_volume_shares: pd.Series
     epsilon: pd.Series
@@ -360,6 +361,7 @@ def run_backtest(
         total_return=metrics["total_return"],
         regime_invalidations=regime_invalidations,
         equity_curve=equity,
+        price=price,
         position_shares=positions,
         trade_volume_shares=trade_volumes,
         epsilon=test["epsilon"].astype(float),

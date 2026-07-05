@@ -17,6 +17,54 @@ from funtrade.config import Settings
 _OU_PHI_MU_ANCHOR = 0.995
 _MU_ANCHOR_DAYS = 252
 _MAX_HALF_LIFE_DAYS = 500.0
+_DAYS_PER_YEAR = 365.25
+
+
+def _annual_fourier_harmonics() -> int:
+    return max(1, int(os.getenv("H0_FOURIER_HARMONICS", "2")))
+
+
+def _annual_phase(index: pd.DatetimeIndex) -> np.ndarray:
+    """Day-of-year phase in [0, 2π) for smooth annual seasonality."""
+    day = index.dayofyear.to_numpy(dtype=float) - 1.0
+    return 2.0 * np.pi * day / _DAYS_PER_YEAR
+
+
+def _annual_fourier_design(index: pd.DatetimeIndex, k: int) -> np.ndarray:
+    phase = _annual_phase(index)
+    cols: list[np.ndarray] = []
+    for harmonic in range(1, k + 1):
+        cols.append(np.cos(harmonic * phase))
+        cols.append(np.sin(harmonic * phase))
+    return np.column_stack(cols)
+
+
+def _seasonal_values(index: pd.DatetimeIndex, coeffs: dict) -> np.ndarray:
+    """Log-price seasonal component (DOW dummies + annual Fourier or legacy month dummies)."""
+    intercept = coeffs.get("intercept", 0.0)
+    dow_coefs = coeffs.get("dow_dummies", {})
+    values = np.full(len(index), intercept, dtype=float)
+
+    dow = index.dayofweek
+    for i, _ts in enumerate(index):
+        values[i] += dow_coefs.get(str(int(dow[i])), 0.0)
+
+    fourier = coeffs.get("fourier_annual")
+    if fourier:
+        k = int(fourier.get("K", 0))
+        cos_coefs = fourier.get("cos", [])
+        sin_coefs = fourier.get("sin", [])
+        phase = _annual_phase(index)
+        for harmonic in range(1, k + 1):
+            values += cos_coefs[harmonic - 1] * np.cos(harmonic * phase)
+            values += sin_coefs[harmonic - 1] * np.sin(harmonic * phase)
+    else:
+        month_coefs = coeffs.get("month_dummies", {})
+        month = index.month
+        for i, _ts in enumerate(index):
+            values[i] += month_coefs.get(str(int(month[i])), 0.0)
+
+    return values
 
 
 def _calibration_lookback_days() -> int:
@@ -33,20 +81,7 @@ class EquilibriumModel:
     seasonal_coeffs: dict
 
     def seasonal_component(self, index: pd.DatetimeIndex) -> np.ndarray:
-        dow = index.dayofweek
-        month = index.month
-        coeffs = self.seasonal_coeffs
-        intercept = coeffs.get("intercept", 0.0)
-        dow_coefs = coeffs.get("dow_dummies", {})
-        month_coefs = coeffs.get("month_dummies", {})
-
-        values = np.full(len(index), intercept, dtype=float)
-        for i, _ts in enumerate(index):
-            d_key = str(int(dow[i]))
-            m_key = str(int(month[i]))
-            values[i] += dow_coefs.get(d_key, 0.0)
-            values[i] += month_coefs.get(m_key, 0.0)
-        return values
+        return _seasonal_values(index, self.seasonal_coeffs)
 
     def deseasonalize(self, prices: pd.Series) -> pd.Series:
         log_prices = np.log(prices.clip(lower=0.01))
@@ -86,28 +121,35 @@ class EquilibriumModel:
 def _fit_seasonality(log_prices: pd.Series) -> dict:
     index = log_prices.index
     dow = index.dayofweek
-    month = index.month
+    k = _annual_fourier_harmonics()
 
     dow_dummies = pd.get_dummies(dow, prefix="d", drop_first=True)
-    month_dummies = pd.get_dummies(month, prefix="m", drop_first=True)
-    X = sm.add_constant(pd.concat([dow_dummies, month_dummies], axis=1).astype(float))
-    model = sm.OLS(log_prices.values.astype(float), X.values.astype(float)).fit()
+    fourier = _annual_fourier_design(index, k)
+    X = sm.add_constant(
+        np.column_stack([dow_dummies.to_numpy(dtype=float), fourier]),
+        has_constant="add",
+    )
+    model = sm.OLS(log_prices.values.astype(float), X).fit()
     params = model.params
 
     intercept = float(params[0])
-    dow_coefs = {}
-    month_coefs = {}
+    dow_coefs: dict[str, float] = {}
+    n_dow = dow_dummies.shape[1]
+    for col, coef in zip(dow_dummies.columns, params[1 : 1 + n_dow], strict=False):
+        dow_coefs[col[2:]] = float(coef)
 
-    for col, coef in zip(X.columns[1:], params[1:], strict=False):
-        if col.startswith("d_"):
-            dow_coefs[col[2:]] = float(coef)
-        elif col.startswith("m_"):
-            month_coefs[col[2:]] = float(coef)
+    fourier_params = params[1 + n_dow :]
+    cos_coefs: list[float] = []
+    sin_coefs: list[float] = []
+    for harmonic in range(k):
+        cos_coefs.append(float(fourier_params[harmonic * 2]))
+        sin_coefs.append(float(fourier_params[harmonic * 2 + 1]))
 
     return {
         "intercept": intercept,
         "dow_dummies": dow_coefs,
-        "month_dummies": month_coefs,
+        "fourier_annual": {"K": k, "cos": cos_coefs, "sin": sin_coefs},
+        "seasonal_model": "fourier",
         "r_squared": float(model.rsquared),
     }
 
@@ -167,12 +209,7 @@ def calibrate_equilibrium(
     log_prices = pd.Series(log_prices.values, index=prices.index, name="log_price")
 
     seasonal_coeffs = _fit_seasonality(log_prices)
-    season = np.full(len(log_prices), seasonal_coeffs["intercept"])
-    dow = log_prices.index.dayofweek
-    month = log_prices.index.month
-    for i, _ts in enumerate(log_prices.index):
-        season[i] += seasonal_coeffs["dow_dummies"].get(str(int(dow[i])), 0.0)
-        season[i] += seasonal_coeffs["month_dummies"].get(str(int(month[i])), 0.0)
+    season = _seasonal_values(log_prices.index, seasonal_coeffs)
 
     residuals = pd.Series(log_prices.values - season, index=log_prices.index, name="residual")
     kappa, mu, sigma = _fit_ou_parameters(residuals, dt_days=1.0)
