@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import psycopg
 from dotenv import load_dotenv
+
+from funtrade.universe_config import AssetClassName, UniverseConfig, load_universe_config
 
 
 def _load_env_file() -> None:
@@ -41,6 +43,9 @@ class Settings:
     regime_spike_sigma: float
     regime_consecutive_bars: int
     min_daily_volume_eur: float
+    w_return: float
+    w_volume: float
+    w_rel_strength: float
     h0_weight_eur_rates: float
     h0_weight_credit_spread: float
     h0_weight_eur_usd: float
@@ -61,25 +66,30 @@ class Settings:
     trend_fair_value_weight: float
     trend_gate_sells: bool
     trend_gate_z: float
+    universe: UniverseConfig | None = None
+    asset_class: AssetClassName | None = None
+    h0_calibration_days: int = 504
+    chart_backend: str = "streamlit"
 
     @classmethod
     def from_env(cls) -> Settings:
-        watchlist_raw = os.getenv(
-            "WATCHLIST",
-            "EXSA.DE,VWCE.DE,EUNL.DE,IS3N.DE,SXR8.DE,AGGH.DE,IBCI.DE",
-        )
+        universe = load_universe_config()
+        etf = universe.etf
         return cls(
             database_url=os.getenv(
                 "DATABASE_URL",
                 "postgresql://funtrade:funtrade@localhost:5433/funtrade",
             ),
-            watchlist=[s.strip() for s in watchlist_raw.split(",") if s.strip()],
-            benchmark=os.getenv("BENCHMARK", "EXSA.DE"),
-            currency=os.getenv("CURRENCY", "EUR"),
-            epsilon_threshold=float(os.getenv("EPSILON_THRESHOLD", "0.5")),
-            regime_spike_sigma=float(os.getenv("REGIME_SPIKE_SIGMA", "3.0")),
-            regime_consecutive_bars=int(os.getenv("REGIME_CONSECUTIVE_BARS", "3")),
-            min_daily_volume_eur=float(os.getenv("MIN_DAILY_VOLUME_EUR", "100000")),
+            watchlist=universe.watchlist(),
+            benchmark=universe.benchmark,
+            currency=universe.currency,
+            epsilon_threshold=etf.epsilon_threshold,
+            regime_spike_sigma=etf.regime_spike_sigma,
+            regime_consecutive_bars=etf.regime_consecutive_bars,
+            min_daily_volume_eur=etf.min_daily_volume_eur,
+            w_return=etf.w_return,
+            w_volume=etf.w_volume,
+            w_rel_strength=etf.w_rel_strength,
             h0_weight_eur_rates=float(os.getenv("H0_WEIGHT_EUR_RATES", "0.15")),
             h0_weight_credit_spread=float(os.getenv("H0_WEIGHT_CREDIT_SPREAD", "0.10")),
             h0_weight_eur_usd=float(os.getenv("H0_WEIGHT_EUR_USD", "0.10")),
@@ -95,11 +105,42 @@ class Settings:
             h0_weight_climate=float(os.getenv("H0_WEIGHT_CLIMATE", "0.06")),
             trend_enable=_env_bool("TREND_ENABLE", False),
             trend_lookback_days=int(os.getenv("TREND_LOOKBACK_DAYS", "200")),
-            trend_use_benchmark=_env_bool("TREND_USE_BENCHMARK", False),
-            trend_epsilon_weight=float(os.getenv("TREND_EPSILON_WEIGHT", "0.15")),
-            trend_fair_value_weight=float(os.getenv("TREND_FAIR_VALUE_WEIGHT", "0.0")),
-            trend_gate_sells=_env_bool("TREND_GATE_SELLS", True),
-            trend_gate_z=float(os.getenv("TREND_GATE_Z", "0.5")),
+            trend_use_benchmark=etf.trend_use_benchmark,
+            trend_epsilon_weight=etf.trend_epsilon_weight,
+            trend_fair_value_weight=etf.trend_fair_value_weight,
+            trend_gate_sells=etf.trend_gate_sells,
+            trend_gate_z=etf.trend_gate_z,
+            universe=universe,
+            asset_class="etf",
+            h0_calibration_days=etf.h0_calibration_days,
+            chart_backend=os.getenv("FUNTRADE_CHART_BACKEND", "streamlit").strip().lower(),
+        )
+
+    def perturbation_weights(self) -> tuple[float, float, float]:
+        return (self.w_return, self.w_volume, self.w_rel_strength)
+
+    def for_symbol(self, symbol: str) -> Settings:
+        """Apply asset-class trading params from config.json for this symbol."""
+        if self.universe is None:
+            return self
+        cls_cfg = self.universe.for_symbol(symbol)
+        asset_class = self.universe.class_of(symbol)
+        return replace(
+            self,
+            asset_class=asset_class,
+            epsilon_threshold=cls_cfg.epsilon_threshold,
+            regime_spike_sigma=cls_cfg.regime_spike_sigma,
+            regime_consecutive_bars=cls_cfg.regime_consecutive_bars,
+            min_daily_volume_eur=cls_cfg.min_daily_volume_eur,
+            w_return=cls_cfg.w_return,
+            w_volume=cls_cfg.w_volume,
+            w_rel_strength=cls_cfg.w_rel_strength,
+            trend_use_benchmark=cls_cfg.trend_use_benchmark,
+            trend_epsilon_weight=cls_cfg.trend_epsilon_weight,
+            trend_fair_value_weight=cls_cfg.trend_fair_value_weight,
+            trend_gate_sells=cls_cfg.trend_gate_sells,
+            trend_gate_z=cls_cfg.trend_gate_z,
+            h0_calibration_days=cls_cfg.h0_calibration_days,
         )
 
     def active_h0_component_ids(self) -> tuple[str, ...]:

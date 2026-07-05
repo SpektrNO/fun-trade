@@ -1,4 +1,4 @@
-"""Streamlit trading console — Wallet, Backtest, Trade tabs."""
+"""Streamlit trading console — Wallet, Backtest, Trade, Recommendations tabs."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from funtrade.execution.paper import (
 from funtrade.data.market import latest_price
 from funtrade.models.equilibrium import calibrate_equilibrium
 from funtrade.models.perturbation import detect_latest_perturbations, signal_from_epsilon, trend_signal_kwargs
-from funtrade.ui.charts import pnl_with_trade_shares_chart, price_epsilon_chart
+from funtrade.ui.plotting import get_chart_renderer
 from funtrade.ui.service import (
     CHART_WINDOW_BACKTEST_TEST,
     CHART_WINDOW_RECENT,
@@ -24,14 +24,17 @@ from funtrade.ui.service import (
     H0_SOURCE_WALK_FORWARD,
     active_equilibrium_status,
     default_ui_params,
+    fetch_recommendations,
     perturbation_context,
     run_backtest_for_ui,
     slice_perturbation_for_chart,
+    watchlist_with_class,
 )
 
 st.set_page_config(page_title="FunTrade Console", page_icon="📈", layout="wide")
 
 settings = Settings.from_env()
+chart_renderer = get_chart_renderer(settings=settings)
 if "params" not in st.session_state:
     st.session_state.params = default_ui_params(settings.watchlist[0] if settings.watchlist else "VWCE.DE")
 
@@ -53,7 +56,34 @@ if _migrate:
     st.session_state.params = params
 
 st.sidebar.title("FunTrade")
-params.symbol = st.sidebar.selectbox("Symbol", settings.watchlist, index=settings.watchlist.index(params.symbol) if params.symbol in settings.watchlist else 0)
+_watchlist = watchlist_with_class(settings)
+_watch_symbols = [sym for sym, _ in _watchlist]
+if params.symbol not in _watch_symbols and _watch_symbols:
+    params.symbol = _watch_symbols[0]
+_chosen = st.sidebar.selectbox(
+    "Symbol",
+    _watch_symbols,
+    index=_watch_symbols.index(params.symbol) if params.symbol in _watch_symbols else 0,
+    format_func=lambda s: f"{s} ({settings.for_symbol(s).asset_class or 'etf'})",
+)
+if _chosen != params.symbol:
+    _prev = params
+    params = default_ui_params(_chosen)
+    params = replace(
+        params,
+        paper_initial_cash=_prev.paper_initial_cash,
+        paper_trade_shares=_prev.paper_trade_shares,
+        paper_fee_bps=_prev.paper_fee_bps,
+        paper_position_limit_shares=_prev.paper_position_limit_shares,
+        h0_weight_oil=_prev.h0_weight_oil,
+        h0_weight_climate=_prev.h0_weight_climate,
+        h0_source=_prev.h0_source,
+        epsilon_chart_window=_prev.epsilon_chart_window,
+    )
+    st.session_state.params = params
+params.symbol = _chosen
+_asset_class = settings.for_symbol(params.symbol).asset_class or "etf"
+st.sidebar.caption(f"Asset class: **{_asset_class.replace('_', ' ')}** (from config.json)")
 params.epsilon_threshold = st.sidebar.slider("ε threshold", 0.3, 3.0, float(params.epsilon_threshold), 0.05)
 params.w_return = st.sidebar.slider("w_return", 0.0, 1.0, float(params.w_return), 0.05)
 params.w_volume = st.sidebar.slider("w_volume", 0.0, 1.0, float(params.w_volume), 0.05)
@@ -137,7 +167,9 @@ params.epsilon_chart_window = st.sidebar.radio(
 )
 st.session_state.params = params
 
-tab_wallet, tab_backtest, tab_trade = st.tabs(["Wallet", "Backtest", "Trade"])
+tab_wallet, tab_backtest, tab_trade, tab_recommendations = st.tabs(
+    ["Wallet", "Backtest", "Trade", "Recommendations"]
+)
 
 with tab_wallet:
     st.subheader("Paper Portfolio")
@@ -241,10 +273,10 @@ with tab_backtest:
                 f"(from {view.get('test_start', '?')}). "
                 "Match Trade tab: same H₀ source + “Backtest test period” window."
             )
-            st.line_chart(view["trade_chart"], x="time", y="epsilon")
+            chart_renderer.render_time_series(view["trade_chart"], x="time", y="epsilon")
         if isinstance(view.get("pnl_curve"), pd.DataFrame) and not view["pnl_curve"].empty:
             st.subheader("Realized vs unrealized PnL")
-            st.pyplot(pnl_with_trade_shares_chart(view["pnl_curve"]), clear_figure=True)
+            chart_renderer.render_pnl_with_trades(view["pnl_curve"])
             traded = view["pnl_curve"]
             if {"shares_bought", "shares_sold"}.issubset(traded.columns):
                 total_bought = float(traded["shares_bought"].sum())
@@ -254,8 +286,12 @@ with tab_backtest:
                     f"(bars on secondary axis)."
                 )
         if isinstance(view.get("equity_curve"), pd.DataFrame) and not view["equity_curve"].empty:
-            st.subheader("Portfolio value over test period")
-            st.line_chart(view["equity_curve"], x="time", y="portfolio_eur")
+            chart_renderer.render_time_series(
+                view["equity_curve"],
+                x="time",
+                y="portfolio_eur",
+                title="Portfolio value over test period",
+            )
 
 with tab_trade:
     st.subheader(f"Trade — {params.symbol}")
@@ -291,15 +327,12 @@ with tab_trade:
         if settings.trend_enable:
             st.metric("z_trend", f"{latest.get('z_trend', 0.0):.2f}")
 
-        chart = chart_series[["epsilon", "price"]].reset_index()
-        chart = chart.rename(columns={"index": "time"})
-        st.pyplot(
-            price_epsilon_chart(
-                chart,
-                epsilon_threshold=params.epsilon_threshold,
-                price_label=f"Price ({settings.currency})",
-            ),
-            clear_figure=True,
+        chart_renderer.render_trade_charts(
+            chart_series,
+            epsilon_threshold=params.epsilon_threshold,
+            currency=settings.currency,
+            trend_enable=settings.trend_enable,
+            trend_gate_z=params.trend_gate_z if params.trend_gate_sells else None,
         )
 
     if st.button("Run model paper cycle"):
@@ -328,3 +361,89 @@ with tab_trade:
                     st.info("No fill (limits or flat signal).")
             else:
                 st.info(f"Signal {sig} — no trade executed.")
+
+with tab_recommendations:
+    st.subheader("Recommendations")
+    st.caption(
+        "Model hints for **every symbol** in `config.json`, using each asset class’s ε threshold. "
+        "For Nordnet: act only on **BUY** / **SELL** rows; cross-check the Trade tab for one symbol."
+    )
+    assume_holding_all = st.toggle(
+        "Assume I hold every symbol",
+        value=bool(st.session_state.get("rec_assume_holding_all", False)),
+        help="Treat each watchlist symbol as a long position (for your DNB portfolio). "
+        "Enables SELL / trend-gate notes when ε is high; uses paper trade size when flat.",
+    )
+    prev_assume = st.session_state.get("rec_assume_holding_all", False)
+    if assume_holding_all != prev_assume:
+        st.session_state.rec_assume_holding_all = assume_holding_all
+
+    if st.button("Refresh recommendations", type="primary") or assume_holding_all != prev_assume:
+        try:
+            st.session_state.recommendations_df = fetch_recommendations(
+                params, assume_holding_all=assume_holding_all,
+            )
+        except Exception as e:
+            st.error(str(e))
+
+    if "recommendations_df" in st.session_state:
+        rec = st.session_state.recommendations_df
+        if rec.empty:
+            st.warning("Watchlist is empty. Add symbols under `etf`, `mutual_fund`, or `share` in config.json.")
+        else:
+            if rec.attrs.get("assume_holding_all"):
+                st.info(
+                    "Showing signals **as if you hold each symbol** (paper qty where flat). "
+                    "Rows marked *assumed* are not in the paper wallet."
+                )
+            n_buy = int((rec["action"] == "BUY").sum()) if "action" in rec.columns else 0
+            n_sell = int((rec["action"] == "SELL").sum()) if "action" in rec.columns else 0
+            n_hold = int((rec["action"] == "HOLD").sum()) if "action" in rec.columns else 0
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Buy", n_buy)
+            m2.metric("Sell", n_sell)
+            m3.metric("Hold", n_hold)
+
+            display = rec.copy()
+            if "position_assumed" in display.columns:
+                display["position_label"] = display.apply(
+                    lambda r: f"{r['position_shares']:.0f}*" if r.get("position_assumed") else f"{r['position_shares']:.0f}",
+                    axis=1,
+                )
+            else:
+                display["position_label"] = display["position_shares"].map(lambda x: f"{x:.0f}")
+
+            display = display.rename(
+                columns={
+                    "symbol": "Symbol",
+                    "asset_class": "Class",
+                    "as_of": "As of",
+                    "price": "Price",
+                    "epsilon": "ε",
+                    "threshold": "ε thresh",
+                    "regime_valid": "Regime OK",
+                    "z_trend": "z_trend",
+                    "position_label": "Position",
+                    "action": "Action",
+                    "note": "Note",
+                }
+            )
+            show_cols = [c for c in display.columns if c not in ("signal", "position_shares", "position_assumed")]
+            st.dataframe(
+                display[show_cols],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Price": st.column_config.NumberColumn(format="%.2f"),
+                    "ε": st.column_config.NumberColumn(format="%.3f"),
+                    "ε thresh": st.column_config.NumberColumn(format="%.2f"),
+                    "Regime OK": st.column_config.CheckboxColumn(),
+                },
+            )
+            if rec.attrs.get("assume_holding_all"):
+                st.caption("*Assumed holding (not in paper wallet). Qty = sidebar paper trade size.")
+            errors = rec.attrs.get("errors", [])
+            if errors:
+                st.warning(f"No model output for: {', '.join(errors)} — run `make ingest` and `make calibrate-all`.")
+    else:
+        st.info("Click **Refresh recommendations** to load the watchlist.")

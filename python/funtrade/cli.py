@@ -25,15 +25,18 @@ from funtrade.models.perturbation import detect_latest_perturbations
 from funtrade.sensitivity.jacobian import compute_jacobian, tune_weights_from_jacobian
 
 
-def _calibrate_summary(model) -> dict:
-    return {
+def _calibrate_summary(model, *, asset_class: str | None = None, h0_calibration_days: int | None = None) -> dict:
+    out = {
         "symbol": model.symbol,
+        "asset_class": asset_class,
+        "h0_calibration_days": h0_calibration_days,
         "kappa": model.kappa,
         "mu": model.mu,
         "sigma": model.sigma,
         "half_life_days": model.half_life_days,
         "seasonal_r_squared": model.seasonal_coeffs.get("r_squared"),
     }
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def calibrate(argv: list[str] | None = None) -> None:
@@ -63,8 +66,15 @@ def calibrate(argv: list[str] | None = None) -> None:
     errors: dict[str, str] = {}
     for symbol in symbols:
         try:
-            model = calibrate_equilibrium(symbol, start=start, end=end, settings=settings)
-            calibrated.append(_calibrate_summary(model))
+            sym_settings = settings.for_symbol(symbol)
+            model = calibrate_equilibrium(symbol, start=start, end=end, settings=sym_settings)
+            calibrated.append(
+                _calibrate_summary(
+                    model,
+                    asset_class=sym_settings.asset_class,
+                    h0_calibration_days=sym_settings.h0_calibration_days,
+                )
+            )
         except Exception as exc:
             errors[symbol] = str(exc)
 
@@ -88,6 +98,7 @@ def detect(argv: list[str] | None = None) -> None:
             [
                 {
                     "symbol": r.symbol,
+                    "asset_class": r.asset_class,
                     "time": r.time.isoformat(),
                     "epsilon": r.epsilon,
                     "magnitude": r.magnitude,
@@ -230,14 +241,19 @@ def symbols(argv: list[str] | None = None) -> None:
     rows = []
     for alias in alias_catalog():
         watchlist_id = alias["watchlist_id"]
+        asset_class = settings.universe.class_of(watchlist_id) if settings.universe else "etf"
         rows.append(
             {
                 **alias,
+                "asset_class": asset_class,
                 "in_watchlist": watchlist_id in settings.watchlist
                 or watchlist_id.upper() in {s.upper() for s in settings.watchlist},
             }
         )
-    print(json.dumps({"aliases": rows, "watchlist": settings.watchlist}, indent=2))
+    print(json.dumps({"aliases": rows, "watchlist": settings.watchlist, "by_class": {
+        name: list(getattr(settings.universe, name).symbols) if settings.universe else []
+        for name in ("etf", "mutual_fund", "share")
+    }}, indent=2))
 
 
 def components(argv: list[str] | None = None) -> None:

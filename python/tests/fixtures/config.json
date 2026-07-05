@@ -1,0 +1,55 @@
+{
+  "benchmark": "EXSA.DE",
+  "currency": "EUR",
+  "aliases": {
+    "NO0010336977": "0P00000O4C.IR",
+    "MYFUND.XX": "0P00001234.IR"
+  },
+  "etf": {
+    "symbols": ["VWCE.DE", "EXSA.DE"],
+    "epsilon_threshold": 0.5,
+    "regime_spike_sigma": 3.0,
+    "regime_consecutive_bars": 3,
+    "min_daily_volume_eur": 100000,
+    "h0_calibration_days": 400,
+    "w_return": 0.35,
+    "w_volume": 0.10,
+    "w_rel_strength": 0.25,
+    "trend_epsilon_weight": 0.15,
+    "trend_fair_value_weight": 0.0,
+    "trend_gate_sells": true,
+    "trend_gate_z": 0.5,
+    "trend_use_benchmark": false
+  },
+  "mutual_fund": {
+    "symbols": ["NO0010336977"],
+    "epsilon_threshold": 0.6,
+    "regime_spike_sigma": 3.0,
+    "regime_consecutive_bars": 3,
+    "min_daily_volume_eur": 0,
+    "h0_calibration_days": 600,
+    "w_return": 0.40,
+    "w_volume": 0.0,
+    "w_rel_strength": 0.20,
+    "trend_epsilon_weight": 0.10,
+    "trend_fair_value_weight": 0.0,
+    "trend_gate_sells": true,
+    "trend_gate_z": 0.5,
+    "trend_use_benchmark": true
+  },
+  "share": {
+    "symbols": ["EQNR.OL"],
+    "epsilon_threshold": 0.8,
+    "regime_spike_sigma": 3.5,
+    "regime_consecutive_bars": 3,
+    "min_daily_volume_eur": 50000,
+    "w_return": 0.30,
+    "w_volume": 0.15,
+    "w_rel_strength": 0.25,
+    "trend_epsilon_weight": 0.05,
+    "trend_fair_value_weight": 0.0,
+    "trend_gate_sells": false,
+    "trend_gate_z": 0.5,
+    "trend_use_benchmark": false
+  }
+}

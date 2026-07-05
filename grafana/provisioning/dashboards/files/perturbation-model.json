@@ -58,7 +58,7 @@
         {
           "datasource": { "type": "postgres", "uid": "TimescaleDB" },
           "format": "table",
-          "rawSql": "SELECT time, symbol, epsilon, magnitude, regime_valid, z_return, z_rel_strength, price FROM perturbation_daily WHERE symbol = '$symbol' AND $__timeFilter(time) ORDER BY time DESC LIMIT 200",
+          "rawSql": "SELECT time, symbol, asset_class, epsilon, magnitude, regime_valid, z_return, z_rel_strength, price FROM perturbation_daily WHERE symbol = '$symbol' AND $__timeFilter(time) ORDER BY time DESC LIMIT 200",
           "refId": "A"
         }
       ],

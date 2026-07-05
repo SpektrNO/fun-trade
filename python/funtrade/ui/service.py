@@ -15,8 +15,13 @@ from funtrade.backtest.engine import (
 )
 from funtrade.config import Settings
 from funtrade.data.loader import MARKET_ADJ_CLOSE, load_latest_equilibrium_params, load_price_bars
-from funtrade.execution.paper import PaperSettings
-from funtrade.models.perturbation import compute_perturbation_series, detect_latest_perturbations, signal_from_epsilon
+from funtrade.execution.paper import PaperSettings, get_portfolio_summary
+from funtrade.models.perturbation import (
+    compute_perturbation_series,
+    detect_latest_perturbations,
+    signal_from_epsilon,
+    trend_signal_kwargs,
+)
 
 CHART_WINDOW_RECENT = "recent_120"
 CHART_WINDOW_BACKTEST_TEST = "backtest_test"
@@ -45,12 +50,15 @@ class UiParams:
     epsilon_chart_window: str
 
     def to_settings(self) -> Settings:
-        base = Settings.from_env()
+        base = Settings.from_env().for_symbol(self.symbol)
         return replace(
             base,
             epsilon_threshold=self.epsilon_threshold,
             regime_spike_sigma=self.regime_spike_sigma,
             regime_consecutive_bars=self.regime_consecutive_bars,
+            w_return=self.w_return,
+            w_volume=self.w_volume,
+            w_rel_strength=self.w_rel_strength,
             h0_weight_oil=self.h0_weight_oil,
             h0_weight_climate=self.h0_weight_climate,
             trend_epsilon_weight=self.trend_epsilon_weight,
@@ -73,27 +81,172 @@ class UiParams:
         return (self.w_return, self.w_volume, self.w_rel_strength)
 
 
+def settings_for_symbol(params: UiParams, symbol: str) -> Settings:
+    """Per-symbol config.json class settings + global sidebar macro/trend overrides."""
+    sym = Settings.from_env().for_symbol(symbol)
+    return replace(
+        sym,
+        h0_weight_oil=params.h0_weight_oil,
+        h0_weight_climate=params.h0_weight_climate,
+        trend_epsilon_weight=params.trend_epsilon_weight,
+        trend_fair_value_weight=params.trend_fair_value_weight,
+        trend_gate_sells=params.trend_gate_sells,
+        trend_gate_z=params.trend_gate_z,
+    )
+
+
+def _signal_action(sig: int) -> str:
+    if sig > 0:
+        return "BUY"
+    if sig < 0:
+        return "SELL"
+    return "HOLD"
+
+
+def _recommendation_note(
+    *,
+    epsilon: float,
+    threshold: float,
+    regime_valid: bool,
+    signal: int,
+    position_shares: float,
+    z_trend: float,
+    trend_gate_sells: bool,
+    trend_gate_z: float,
+) -> str:
+    if signal > 0:
+        return "Mean-reversion buy"
+    if signal < 0:
+        return "Exit long"
+    if abs(epsilon) <= threshold:
+        return "Within ε band"
+    if epsilon < -threshold and not regime_valid:
+        return "Buy blocked (regime)"
+    if epsilon > threshold and position_shares <= 0:
+        return "Overbought, flat (long-only)"
+    if (
+        epsilon > threshold
+        and position_shares > 0
+        and trend_gate_sells
+        and z_trend > trend_gate_z
+    ):
+        return "Sell gated (uptrend)"
+    return "No action"
+
+
+def fetch_recommendations(
+    params: UiParams,
+    *,
+    assume_holding_all: bool = False,
+) -> pd.DataFrame:
+    """Latest model hints for every symbol in config.json (Nordnet manual trading)."""
+    base = Settings.from_env()
+    symbols = base.watchlist
+    if not symbols:
+        return pd.DataFrame()
+
+    perturbations = detect_latest_perturbations(symbols=symbols, settings=base, persist=False)
+    by_symbol = {p.symbol: p for p in perturbations}
+
+    summary = get_portfolio_summary(settings=base, paper=params.to_paper_settings())
+    positions = {pos["symbol"]: float(pos["net_qty_shares"]) for pos in summary.get("positions", [])}
+    assumed_qty = float(params.paper_trade_shares) if params.paper_trade_shares > 0 else 1.0
+
+    rows: list[dict] = []
+    errors: list[str] = []
+    for symbol in symbols:
+        sym_settings = settings_for_symbol(params, symbol)
+        p = by_symbol.get(symbol)
+        paper_qty = positions.get(symbol, 0.0)
+        if p is None:
+            errors.append(symbol)
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "asset_class": sym_settings.asset_class or "etf",
+                    "as_of": None,
+                    "price": None,
+                    "epsilon": None,
+                    "threshold": sym_settings.epsilon_threshold,
+                    "regime_valid": None,
+                    "z_trend": None,
+                    "position_shares": paper_qty,
+                    "position_assumed": False,
+                    "signal": None,
+                    "action": "—",
+                    "note": "No data (ingest + calibrate)",
+                }
+            )
+            continue
+
+        pos_assumed = assume_holding_all and paper_qty <= 0
+        pos_qty = paper_qty if paper_qty > 0 else (assumed_qty if assume_holding_all else 0.0)
+        z_trend = float(p.inputs.get("z_trend", 0.0))
+        threshold = sym_settings.epsilon_threshold
+        sig = signal_from_epsilon(
+            p.epsilon,
+            threshold,
+            p.regime_valid,
+            long_only=True,
+            current_position=pos_qty,
+            **trend_signal_kwargs(sym_settings, z_trend),
+        )
+        rows.append(
+            {
+                "symbol": symbol,
+                "asset_class": p.asset_class,
+                "as_of": p.time.strftime("%Y-%m-%d") if hasattr(p.time, "strftime") else str(p.time),
+                "price": float(p.inputs.get("price", 0.0)),
+                "epsilon": round(p.epsilon, 3),
+                "threshold": threshold,
+                "regime_valid": p.regime_valid,
+                "z_trend": round(z_trend, 2) if sym_settings.trend_enable else None,
+                "position_shares": pos_qty,
+                "position_assumed": pos_assumed,
+                "signal": sig,
+                "action": _signal_action(sig),
+                "note": _recommendation_note(
+                    epsilon=p.epsilon,
+                    threshold=threshold,
+                    regime_valid=p.regime_valid,
+                    signal=sig,
+                    position_shares=pos_qty,
+                    z_trend=z_trend,
+                    trend_gate_sells=sym_settings.trend_gate_sells and sym_settings.trend_enable,
+                    trend_gate_z=sym_settings.trend_gate_z,
+                ),
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    if errors and not df.empty:
+        df.attrs["errors"] = errors
+    df.attrs["assume_holding_all"] = assume_holding_all
+    return df
+
+
 def default_ui_params(symbol: str = "VWCE.DE") -> UiParams:
-    s = Settings.from_env()
+    base = Settings.from_env()
+    sym = base.for_symbol(symbol)
     p = PaperSettings.from_env()
     return UiParams(
         symbol=symbol,
-        epsilon_threshold=s.epsilon_threshold,
-        regime_spike_sigma=s.regime_spike_sigma,
-        regime_consecutive_bars=s.regime_consecutive_bars,
-        w_return=0.35,
-        w_volume=0.10,
-        w_rel_strength=0.25,
+        epsilon_threshold=sym.epsilon_threshold,
+        regime_spike_sigma=sym.regime_spike_sigma,
+        regime_consecutive_bars=sym.regime_consecutive_bars,
+        w_return=sym.w_return,
+        w_volume=sym.w_volume,
+        w_rel_strength=sym.w_rel_strength,
         paper_initial_cash=p.initial_cash,
         paper_trade_shares=p.trade_shares,
         paper_fee_bps=p.fee_bps,
         paper_position_limit_shares=p.position_limit_shares,
-        h0_weight_oil=s.h0_weight_oil,
-        h0_weight_climate=s.h0_weight_climate,
-        trend_epsilon_weight=s.trend_epsilon_weight,
-        trend_fair_value_weight=s.trend_fair_value_weight,
-        trend_gate_sells=s.trend_gate_sells,
-        trend_gate_z=s.trend_gate_z,
+        h0_weight_oil=base.h0_weight_oil,
+        h0_weight_climate=base.h0_weight_climate,
+        trend_epsilon_weight=sym.trend_epsilon_weight,
+        trend_fair_value_weight=sym.trend_fair_value_weight,
+        trend_gate_sells=sym.trend_gate_sells,
+        trend_gate_z=sym.trend_gate_z,
         h0_source=H0_SOURCE_SAVED,
         epsilon_chart_window=CHART_WINDOW_RECENT,
     )
@@ -176,21 +329,36 @@ def slice_perturbation_for_chart(
 def perturbation_context(
     symbol: str,
     *,
-    weights: tuple[float, float, float] = (0.35, 0.10, 0.25),
+    weights: tuple[float, float, float] | None = None,
     settings: Settings | None = None,
     h0_source: str = H0_SOURCE_SAVED,
 ) -> pd.DataFrame:
-    settings = settings or Settings.from_env()
+    base = settings or Settings.from_env()
+    sym_settings = base.for_symbol(symbol)
     equilibrium = None
     if h0_source == H0_SOURCE_WALK_FORWARD:
-        bars = load_price_bars(symbol, MARKET_ADJ_CLOSE, settings=settings)
+        bars = load_price_bars(symbol, MARKET_ADJ_CLOSE, settings=sym_settings)
         if not bars.empty:
             equilibrium = resolve_h0_equilibrium(
-                symbol, h0_source=h0_source, all_data=bars, settings=settings,
+                symbol, h0_source=h0_source, all_data=bars, settings=sym_settings,
             )
+    if weights is None:
+        weights = sym_settings.perturbation_weights()
     return compute_perturbation_series(
-        symbol, weights=weights, settings=settings, equilibrium=equilibrium,
+        symbol, weights=weights, settings=sym_settings, equilibrium=equilibrium,
     )
+
+
+def watchlist_with_class(settings: Settings | None = None) -> list[tuple[str, str]]:
+    """(symbol, asset_class) pairs in config order."""
+    settings = settings or Settings.from_env()
+    if settings.universe is None:
+        return [(s, "etf") for s in settings.watchlist]
+    rows: list[tuple[str, str]] = []
+    for name, cfg in settings.universe.by_class().items():
+        for sym in cfg.symbols:
+            rows.append((sym, name))
+    return rows
 
 
 def suggest_epsilon_threshold(epsilon: pd.Series, *, quantile: float = 0.75) -> float:

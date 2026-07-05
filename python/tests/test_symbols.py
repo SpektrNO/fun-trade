@@ -23,8 +23,7 @@ def test_resolve_fetch_ticker_xetra_default():
     assert resolve_fetch_ticker("VWCE") == "VWCE.DE"
 
 
-def test_resolve_fetch_ticker_env_override(monkeypatch):
-    monkeypatch.setenv("SYMBOL_ALIASES", "MYFUND.XX=0P00001234.IR")
+def test_resolve_fetch_ticker_config_alias():
     assert symbol_aliases()["MYFUND.XX"] == "0P00001234.IR"
     assert resolve_fetch_ticker("MYFUND.XX") == "0P00001234.IR"
 

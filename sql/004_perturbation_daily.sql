@@ -2,6 +2,7 @@
 CREATE TABLE IF NOT EXISTS perturbation_daily (
   time            TIMESTAMPTZ NOT NULL,
   symbol          TEXT NOT NULL,
+  asset_class     TEXT,
   epsilon         DOUBLE PRECISION NOT NULL,
   magnitude       DOUBLE PRECISION NOT NULL,
   regime_valid    BOOLEAN NOT NULL DEFAULT TRUE,

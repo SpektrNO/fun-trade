@@ -1,0 +1,72 @@
+{
+  "benchmark": "EXSA.DE",
+  "currency": "EUR",
+  "aliases": {
+    "NO0010336977": "0P00000O4C.IR",
+    "DNB-BARNE.IR": "0P00000O4C.IR",
+    "DNB.BARNEFOND": "0P00000O4C.IR",
+    "HANDELSBANKEN.HE": "0P00014CZ5.IR",
+    "DNB.TEKNOLOGIA": "0P00000MVB.IR",
+    "AGGH.DE": "EUNA.DE"
+  },
+  "etf": {
+    "symbols": [
+      "EXSA.DE",
+      "VWCE.DE",
+      "EUNL.DE",
+      "IS3N.DE",
+      "SXR8.DE",
+      "AGGH.DE",
+      "IBCI.DE"
+    ],
+    "epsilon_threshold": 0.75,
+    "regime_spike_sigma": 3.0,
+    "regime_consecutive_bars": 3,
+    "min_daily_volume_eur": 100000,
+    "h0_calibration_days": 504,
+    "w_return": 0.35,
+    "w_volume": 0.10,
+    "w_rel_strength": 0.25,
+    "trend_epsilon_weight": 0.15,
+    "trend_fair_value_weight": 0.0,
+    "trend_gate_sells": true,
+    "trend_gate_z": 0.5,
+    "trend_use_benchmark": false
+  },
+  "mutual_fund": {
+    "symbols": [
+      "NO0010336977",
+      "HANDELSBANKEN.HE",
+      "DNB.TEKNOLOGIA"
+    ],
+    "epsilon_threshold": 0.75,
+    "regime_spike_sigma": 3.0,
+    "regime_consecutive_bars": 3,
+    "min_daily_volume_eur": 0,
+    "h0_calibration_days": 730,
+    "w_return": 0.35,
+    "w_volume": 0.0,
+    "w_rel_strength": 0.25,
+    "trend_epsilon_weight": 0.15,
+    "trend_fair_value_weight": 0.15,
+    "trend_gate_sells": true,
+    "trend_gate_z": 0.5,
+    "trend_use_benchmark": true
+  },
+  "share": {
+    "symbols": [],
+    "epsilon_threshold": 0.75,
+    "regime_spike_sigma": 3.5,
+    "regime_consecutive_bars": 3,
+    "min_daily_volume_eur": 50000,
+    "h0_calibration_days": 365,
+    "w_return": 0.30,
+    "w_volume": 0.15,
+    "w_rel_strength": 0.25,
+    "trend_epsilon_weight": 0.10,
+    "trend_fair_value_weight": 0.0,
+    "trend_gate_sells": false,
+    "trend_gate_z": 0.5,
+    "trend_use_benchmark": false
+  }
+}

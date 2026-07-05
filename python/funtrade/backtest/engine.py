@@ -178,7 +178,7 @@ def run_backtest(
     epsilon_threshold: float | None = None,
     train_end: pd.Timestamp | None = None,
     test_start: pd.Timestamp | None = None,
-    weights: tuple[float, float, float] = (0.35, 0.10, 0.25),
+    weights: tuple[float, float, float] | None = None,
     fee_bps: float | None = None,
     position_limit_shares: float | None = None,
     trade_shares: float | None = None,
@@ -188,8 +188,11 @@ def run_backtest(
     h0_source: str = H0_SOURCE_WALK_FORWARD,
 ) -> BacktestResult:
     settings = settings or Settings.from_env()
+    settings = settings.for_symbol(symbol)
     if epsilon_threshold is None:
         epsilon_threshold = settings.epsilon_threshold
+    if weights is None:
+        weights = settings.perturbation_weights()
 
     all_data = load_price_bars(symbol, MARKET_ADJ_CLOSE, settings=settings)
     if all_data.empty or len(all_data) < 60:

@@ -153,12 +153,12 @@ def calibrate_equilibrium(
     persist: bool = True,
     settings: Settings | None = None,
 ) -> EquilibriumModel:
-    settings = settings or Settings.from_env()
+    settings = (settings or Settings.from_env()).for_symbol(symbol)
     df = load_price_bars(symbol, market, start=start, end=end, settings=settings)
     if df.empty or len(df) < 60:
         raise ValueError(f"Insufficient price data for symbol {symbol}")
 
-    lookback = _calibration_lookback_days()
+    lookback = settings.h0_calibration_days
     if start is None and len(df) > lookback:
         df = df.tail(lookback)
 
@@ -203,6 +203,7 @@ def load_or_calibrate(symbol: str, *, settings: Settings | None = None, **kwargs
     from funtrade.data.loader import load_latest_equilibrium_params
 
     settings = settings or Settings.from_env()
+    settings = settings.for_symbol(symbol)
     params = load_latest_equilibrium_params(symbol, settings=settings)
     if params is None:
         return calibrate_equilibrium(symbol, settings=settings, **kwargs)

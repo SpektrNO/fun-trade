@@ -29,9 +29,10 @@ help: ## Show this help
 	@echo "  make calibrate SYMBOL=VWCE.DE && make detect && make backtest SYMBOL=VWCE.DE"
 	@echo "  make ui"
 
-setup: ## First-time setup: copy .env, install Python deps
+setup: ## First-time setup: copy .env + config.json, install Python deps
 	@test -f $(ROOT)/.env || cp $(ROOT)/.env.example $(ROOT)/.env
-	@echo "Created .env (edit WATCHLIST / DATABASE_URL if needed)"
+	@test -f $(ROOT)/config.json || cp $(ROOT)/config.json.example $(ROOT)/config.json
+	@echo "Created .env and config.json (edit watchlists / DATABASE_URL if needed)"
 	$(MAKE) build
 
 build: ## Install Python package (uv sync)
@@ -55,7 +56,7 @@ grafana-reload: ## Restart Grafana to load provisioned dashboards
 	@echo "Grafana: http://localhost:3001 → Dashboards → FunTrade folder"
 
 migrate: ## Apply SQL migrations to running DB
-	@for f in $(ROOT)/sql/002_paper_trading.sql $(ROOT)/sql/003_factor_signals.sql $(ROOT)/sql/004_perturbation_daily.sql; do \
+	@for f in $(ROOT)/sql/002_paper_trading.sql $(ROOT)/sql/003_factor_signals.sql $(ROOT)/sql/004_perturbation_daily.sql $(ROOT)/sql/005_perturbation_daily_asset_class.sql; do \
 		echo "Applying $$f..."; \
 		docker exec -i funtrade-timescaledb psql -U $${POSTGRES_USER:-funtrade} -d $${POSTGRES_DB:-funtrade} < "$$f"; \
 	done

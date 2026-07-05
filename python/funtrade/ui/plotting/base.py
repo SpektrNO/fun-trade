@@ -1,0 +1,38 @@
+"""Abstract chart renderer for the Streamlit console."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+
+import pandas as pd
+
+
+class ChartRenderer(ABC):
+    """Library-agnostic chart API; concrete backends render via Streamlit, Plotly, etc."""
+
+    @abstractmethod
+    def render_time_series(
+        self,
+        df: pd.DataFrame,
+        *,
+        x: str,
+        y: str | list[str],
+        title: str | None = None,
+    ) -> None:
+        """Single time-series line chart (optionally multiple y columns)."""
+
+    @abstractmethod
+    def render_trade_charts(
+        self,
+        series: pd.DataFrame,
+        *,
+        epsilon_threshold: float,
+        currency: str,
+        trend_enable: bool = False,
+        trend_gate_z: float | None = None,
+    ) -> None:
+        """Trade tab: ε bands, price, and optional z_trend panels."""
+
+    @abstractmethod
+    def render_pnl_with_trades(self, df: pd.DataFrame) -> None:
+        """Backtest: realized/unrealized PnL with buy/sell share bars."""

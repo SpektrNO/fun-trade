@@ -14,7 +14,7 @@ Research simulator for **European UCITS ETFs** using a perturbation-theory model
 
 ```bash
 # 1. Config
-cp .env.example .env          # edit WATCHLIST if needed
+cp .env.example .env && cp config.json.example config.json   # edit config.json watchlists
 
 # 2. Infrastructure
 make setup                    # install Python deps
@@ -53,7 +53,7 @@ make setup && make run && make demo SYMBOL=VWCE.DE
 | `make ingest` | Watchlist daily bars (Stooq → yfinance fallback) |
 | `make ingest-factors` | H₀ macro series (EUR/USD, rates, credit spread; optional oil/climate via `.env`) |
 | `make calibrate SYMBOL=VWCE.DE` | Fit H₀ OU equilibrium (one symbol) |
-| `make calibrate-all` | Fit H₀ for entire `WATCHLIST` |
+| `make calibrate-all` | Fit H₀ for entire watchlist (`config.json`) |
 | `make detect` | Latest ε per watchlist symbol |
 | `make backtest SYMBOL=VWCE.DE` | Walk-forward backtest |
 | `make sweep SYMBOL=VWCE.DE` | ε threshold sweep |
@@ -84,7 +84,7 @@ price/factor ingest → TimescaleDB
 
 **Trade rule:** long-only mean reversion — buy when ε < −threshold and `regime_valid`; sell to exit when ε > +threshold while holding (exit allowed even if regime invalid).
 
-On daily UCITS data, |ε| on the close is often below 0.6; the default threshold is **0.5**. Long-only needs **ε < −threshold** to buy first — if backtest shows zero trades, lower ε in the sidebar or set `EPSILON_THRESHOLD=0.5` in `.env`.
+On daily UCITS data, |ε| on the close is often below 0.6; ETF defaults use **0.75** in `config.json`. Long-only needs **ε < −threshold** to buy first — if backtest shows zero trades, lower ε in the sidebar or in the asset-class block in `config.json`.
 
 See [fun-trade-plan.md](fun-trade-plan.md) and [docs/component-model.md](docs/component-model.md) for design detail.
 
@@ -103,7 +103,7 @@ make calibrate-all       # H₀ for every symbol in WATCHLIST
 make ui                  # optional → http://localhost:8501
 ```
 
-Check `.env`: `WATCHLIST`, `EPSILON_THRESHOLD` (default **0.5**), and `PAPER_*` wallet settings.
+Check `.env` for `DATABASE_URL` and `PAPER_*` wallet settings. Trading thresholds and watchlists are in **`config.json`**.
 
 ### Daily refresh (before acting)
 
@@ -178,20 +178,23 @@ make ingest && make ingest-factors && make calibrate-all
 | `AGGH.DE` | Global aggregate bonds (yfinance: `EUNA.DE`) |
 | `IBCI.DE` | Euro gov bonds (rates proxy) |
 
-Configure in `.env`:
+Configure in **`config.json`** (copy from `config.json.example` on first setup):
+
+- **`benchmark`** / **`currency`** — global universe defaults  
+- **`etf`**, **`mutual_fund`**, **`share`** — separate symbol lists and trading params (`epsilon_threshold`, regime gates, H₁ weights, trend dampening, **`h0_calibration_days`**)  
+- **`aliases`** — watchlist id → Yahoo/Stooq fetch ticker  
+
+Example mutual-fund vs ETF difference: `mutual_fund.min_daily_volume_eur: 0` skips the liquidity gate; `mutual_fund.h0_calibration_days: 730` uses a longer NAV history for H₀ than ETFs (`504`).
 
 ```bash
-BENCHMARK=EXSA.DE
-WATCHLIST=EXSA.DE,VWCE.DE,EUNL.DE,IS3N.DE,SXR8.DE,AGGH.DE,IBCI.DE,NO0010336977
-CURRENCY=EUR
-EPSILON_THRESHOLD=0.5
+make setup    # creates config.json from config.json.example
 ```
 
 ### Symbol aliases (ISIN / friendly names)
 
-`WATCHLIST` uses **your** symbol ids (ISIN, short name, or exchange ticker). When Yahoo/Stooq needs a different ticker, map it via built-in aliases or `.env`:
+Watchlist ids use **your** names (ISIN, Nordnet label, or exchange ticker). Map fetch tickers under **`aliases`** in `config.json`:
 
-| WATCHLIST id | Fund | Yahoo fetch ticker |
+| Watchlist id | Fund | Yahoo fetch ticker |
 |--------------|------|--------------------|
 | `NO0010336977` | DNB Barnefond A | `0P00000O4C.IR` |
 | `DNB-BARNE.IR` | DNB Barnefond A (alias) | `0P00000O4C.IR` |
@@ -202,13 +205,7 @@ List aliases and whether they are in your watchlist:
 uv run funtrade-symbols
 ```
 
-Add custom mappings without code changes:
-
-```bash
-SYMBOL_ALIASES=NO0010336977=0P00000O4C.IR,MYFUND.XX=0P00001234.IR
-```
-
-After adding a symbol, run `make ingest SYMBOL=NO0010336977` then `make calibrate-all`.
+After adding a symbol to `config.json`, run `make ingest SYMBOL=NO0010336977` then `make calibrate-all`.
 
 Optional H₀ macro (oil/climate) and **trend expectation (H₂)** — off by default; see `.env.example` and [docs/component-model.md](docs/component-model.md). Active components: `uv run funtrade-components`.
 

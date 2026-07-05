@@ -18,6 +18,7 @@ from funtrade.models.equilibrium import EquilibriumModel, load_or_calibrate
 class PerturbationResult:
     time: pd.Timestamp
     symbol: str
+    asset_class: str
     epsilon: float
     magnitude: float
     regime_valid: bool
@@ -55,12 +56,14 @@ def compute_perturbation_series(
     symbol: str,
     *,
     benchmark_symbol: str | None = None,
-    weights: tuple[float, float, float] = (0.35, 0.10, 0.25),
+    weights: tuple[float, float, float] | None = None,
     settings: Settings | None = None,
     equilibrium: EquilibriumModel | None = None,
 ) -> pd.DataFrame:
-    settings = settings or Settings.from_env()
-    equilibrium = equilibrium or load_or_calibrate(symbol)
+    settings = (settings or Settings.from_env()).for_symbol(symbol)
+    if weights is None:
+        weights = settings.perturbation_weights()
+    equilibrium = equilibrium or load_or_calibrate(symbol, settings=settings)
 
     df = load_price_bars(symbol, MARKET_ADJ_CLOSE, settings=settings)
     if df.empty:
@@ -179,7 +182,12 @@ def detect_latest_perturbations(
 
     for symbol in symbols:
         try:
-            series = compute_perturbation_series(symbol, settings=settings)
+            sym_settings = settings.for_symbol(symbol)
+            series = compute_perturbation_series(
+                symbol,
+                weights=sym_settings.perturbation_weights(),
+                settings=sym_settings,
+            )
             if series.empty:
                 continue
 
@@ -188,6 +196,7 @@ def detect_latest_perturbations(
             result = PerturbationResult(
                 time=ts,
                 symbol=symbol,
+                asset_class=sym_settings.asset_class or "etf",
                 epsilon=float(latest["epsilon"]),
                 magnitude=float(latest["magnitude"]),
                 regime_valid=bool(latest["regime_valid"]),
@@ -216,7 +225,7 @@ def detect_latest_perturbations(
             results.append(result)
 
             if persist:
-                upsert_perturbation_daily(symbol, series, settings=settings)
+                upsert_perturbation_daily(symbol, series, settings=sym_settings)
                 save_perturbation_event(
                     ts.to_pydatetime(),
                     symbol,
@@ -224,7 +233,7 @@ def detect_latest_perturbations(
                     result.epsilon,
                     result.inputs,
                     result.regime_valid,
-                    settings=settings,
+                    settings=sym_settings,
                 )
         except Exception:
             continue

@@ -25,8 +25,7 @@ def run_paper_once(
     perturbations = detect_latest_perturbations(symbols=symbols, settings=settings, persist=True)
 
     for p in perturbations:
-        from funtrade.execution.paper import get_portfolio_summary
-
+        sym_settings = settings.for_symbol(p.symbol)
         summary = get_portfolio_summary(settings=settings, paper=paper)
         pos_qty = 0.0
         for pos in summary.get("positions", []):
@@ -36,13 +35,13 @@ def run_paper_once(
 
         signal = signal_from_epsilon(
             p.epsilon,
-            settings.epsilon_threshold,
+            sym_settings.epsilon_threshold,
             p.regime_valid,
             long_only=True,
             current_position=pos_qty,
-            **trend_signal_kwargs(settings, float(p.inputs.get("z_trend", 0.0))),
+            **trend_signal_kwargs(sym_settings, float(p.inputs.get("z_trend", 0.0))),
         )
-        price_df = load_price_bars(p.symbol, MARKET_ADJ_CLOSE, settings=settings)
+        price_df = load_price_bars(p.symbol, MARKET_ADJ_CLOSE, settings=sym_settings)
         if price_df.empty:
             continue
 
