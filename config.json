@@ -19,7 +19,8 @@
       "IS3N.DE",
       "SXR8.DE",
       "AGGH.DE",
-      "IBCI.DE"
+      "IBCI.DE",
+      "FLQA.SW"
     ],
     "epsilon_threshold": 0.75,
     "regime_spike_sigma": 3.0,

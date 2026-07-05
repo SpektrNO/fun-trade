@@ -37,8 +37,9 @@ htmlcov/
 .ruff_cache/
 .pytype/
 
-# Project data (paper trade logs, local CSV dumps)
-data/
+# Project data (paper trade logs, local CSV dumps — not python/funtrade/data package)
+/data/
+/python/data/
 
 # Jupyter
 .ipynb_checkpoints/
