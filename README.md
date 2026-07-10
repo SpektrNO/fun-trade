@@ -1,8 +1,25 @@
 # FunTrade
 
-Research simulator for **European UCITS ETFs** using a perturbation-theory model ported from [per-trade](../per-trade): H₀ equilibrium + H₁ deviation signals (ε), backtests, paper portfolio, and Grafana observability.
+Research simulator for **European UCITS ETFs** and mutual funds using a perturbation-theory model ported from [per-trade](../per-trade).
 
 **Paper only in v1** — no broker connectivity. Prove the model on public daily data before IBKR or similar.
+
+## What it is
+
+FunTrade is a **systematic trading assistant**, not a hands-off execution bot. In market terms:
+
+| Category | How FunTrade fits |
+|----------|-------------------|
+| **Trading assistant / copilot** | Estimates fair value and flags when a fund looks cheap or rich; you decide and place orders (e.g. Nordnet). |
+| **Quant research & backtest platform** | Calibrated H₀ equilibrium, daily ε signals, walk-forward backtests, threshold tuning, Grafana. |
+| **Tactical overlay** | Meant to sit on top of a strategic buy-and-hold core — add on dips, trim on rallies — not to replace DCA or asset allocation. |
+| **Long-only, daily horizon** | Mean-reversion on UCITS daily closes; regime gates and trend dampening; not HFT, momentum, or shorting. |
+
+**Strategy in one line:** slow **equilibrium fair value (H₀)** plus fast **deviation score (ε)** → long-only buy / hold / trim when price is far below or above the model band.
+
+**What it is not:** a robo-advisor, an “AI trading bot” that auto-executes, a real-time feed, or an alpha guarantee. v1 is **research, signals, paper simulation, and observability** first.
+
+Model detail: [docs/component-model.md](docs/component-model.md) · Parameter tuning: [docs/tuning-guide.md](docs/tuning-guide.md)
 
 ## Prerequisites
 
