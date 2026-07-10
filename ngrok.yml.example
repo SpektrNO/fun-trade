@@ -1,0 +1,24 @@
+version: "2"
+
+# FunTrade — ngrok tunnel to local Streamlit UI
+#
+# Setup (once):
+#   make ngrok-setup
+#   # edit ngrok.yml: set your reserved *.ngrok-free.dev domain (or use make ngrok-tunnel-ephemeral)
+#
+# Start (two terminals):
+#   make ui            # terminal 1 → http://localhost:8501
+#   make ngrok-tunnel  # terminal 2 → https://YOUR_DOMAIN
+#
+# Dashboard: http://127.0.0.1:4040
+
+region: auto
+web_addr: 127.0.0.1:4040
+log_level: info
+
+tunnels:
+  funtrade:
+    proto: http
+    addr: 8501
+    domain: YOUR_DOMAIN_HERE
+    # schemes: [https]  # uncomment to disable http on the public URL

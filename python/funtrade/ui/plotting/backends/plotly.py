@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -19,11 +21,18 @@ _LAYOUT = dict(
 _AXIS_ZOOMABLE = dict(fixedrange=False)
 
 
-def _show(fig: go.Figure) -> None:
+def _chart_key(*parts: str) -> str:
+    raw = "-".join(p for p in parts if p).lower()
+    raw = re.sub(r"[^a-z0-9\-]+", "-", raw)
+    raw = re.sub(r"-+", "-", raw).strip("-")
+    return f"plotly-{raw}"[:80]
+
+
+def _show(fig: go.Figure, *, key: str) -> None:
     fig.update_layout(**_LAYOUT)
     fig.update_xaxes(**_AXIS_ZOOMABLE)
     fig.update_yaxes(**_AXIS_ZOOMABLE)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=key)
 
 
 def _time_series_figure(df: pd.DataFrame, *, x: str, y: str | list[str], title: str | None) -> go.Figure:
@@ -51,7 +60,8 @@ class PlotlyRenderer(ChartRenderer):
     ) -> None:
         if title:
             st.subheader(title)
-        _show(_time_series_figure(df, x=x, y=y, title=None))
+        y_key = y if isinstance(y, str) else "-".join(y)
+        _show(_time_series_figure(df, x=x, y=y, title=None), key=_chart_key("ts", title or y_key))
 
     def render_trade_charts(
         self,
@@ -71,19 +81,28 @@ class PlotlyRenderer(ChartRenderer):
 
         st.subheader("ε")
         st.caption(f"Buy/sell band at ±{epsilon_threshold:.2f}")
-        _show(_time_series_figure(
-            charts["epsilon"], x="time", y=["epsilon", "upper", "lower", "zero"], title=None,
-        ))
+        _show(
+            _time_series_figure(
+                charts["epsilon"], x="time", y=["epsilon", "upper", "lower", "zero"], title=None,
+            ),
+            key=_chart_key("trade", "epsilon"),
+        )
 
         st.subheader(f"Price ({currency})")
-        _show(_time_series_figure(charts["price"], x="time", y="price", title=None))
+        _show(
+            _time_series_figure(charts["price"], x="time", y="price", title=None),
+            key=_chart_key("trade", "price"),
+        )
 
         if "z_trend" in charts:
             st.subheader("Trend (z_trend)")
             z_cols = ["z_trend"]
             if "gate" in charts["z_trend"].columns:
                 z_cols.extend(["gate", "neg_gate"])
-            _show(_time_series_figure(charts["z_trend"], x="time", y=z_cols, title=None))
+            _show(
+                _time_series_figure(charts["z_trend"], x="time", y=z_cols, title=None),
+                key=_chart_key("trade", "z-trend"),
+            )
 
     def render_pnl_with_trades(self, df: pd.DataFrame) -> None:
         plot_df = df.copy()
@@ -121,4 +140,4 @@ class PlotlyRenderer(ChartRenderer):
         fig.update_yaxes(title_text="PnL (EUR)", secondary_y=False)
         fig.update_yaxes(title_text="Shares traded", secondary_y=True)
         fig.update_layout(title="Realized vs unrealized PnL")
-        _show(fig)
+        _show(fig, key=_chart_key("pnl", "trades"))

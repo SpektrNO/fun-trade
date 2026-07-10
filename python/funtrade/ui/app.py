@@ -31,7 +31,9 @@ from funtrade.ui.service import (
     watchlist_with_class,
 )
 
-st.set_page_config(page_title="FunTrade Console", page_icon="📈", layout="wide")
+# Emoji page_icon creates /images/<hash>.png URLs that iOS/link previews open directly;
+# Streamlit then serves HTML at that path and relative ./static/ assets break → blank page.
+st.set_page_config(page_title="FunTrade Console", layout="wide")
 
 settings = Settings.from_env()
 chart_renderer = get_chart_renderer(settings=settings)

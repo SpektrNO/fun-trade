@@ -44,8 +44,13 @@ htmlcov/
 # Jupyter
 .ipynb_checkpoints/
 
-# Streamlit secrets
+# Streamlit secrets (config lives in python/.streamlit/)
 .streamlit/secrets.toml
+python/.streamlit/secrets.toml
+
+# ngrok (credentials + reserved domain — copy from *.example)
+ngrok.local.yml
+ngrok.yml
 
 # OS
 .DS_Store

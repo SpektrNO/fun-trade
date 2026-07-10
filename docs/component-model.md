@@ -26,6 +26,8 @@ After enabling, run `make ingest-factors` and tune weights (`H0_WEIGHT_OIL`, `H0
 
 Trade when `|ε| > EPSILON_THRESHOLD` and `regime_valid` (long-only). Optional **trend expectation** (`TREND_ENABLE`) dampens ε in uptrends and can gate sell exits.
 
+**Tuning parameters:** see [tuning-guide.md](tuning-guide.md) for strategy-oriented presets and full reference.
+
 **Trend (H₂)** — optional via `.env`:
 
 | Setting | Role |

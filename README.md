@@ -184,6 +184,8 @@ Configure in **`config.json`** (copy from `config.json.example` on first setup):
 - **`etf`**, **`mutual_fund`**, **`share`** — separate symbol lists and trading params (`epsilon_threshold`, regime gates, H₁ weights, trend dampening, **`h0_calibration_days`**)  
 - **`aliases`** — watchlist id → Yahoo/Stooq fetch ticker  
 
+**Tuning:** [docs/tuning-guide.md](docs/tuning-guide.md) — what each parameter does, grouped by strategy (“more signals”, “hold long-term”, bull-market buys, etc.).
+
 Example mutual-fund vs ETF difference: `mutual_fund.min_daily_volume_eur: 0` skips the liquidity gate; `mutual_fund.h0_calibration_days: 730` uses a longer NAV history for H₀ than ETFs (`504`).
 
 ```bash
@@ -216,6 +218,38 @@ Optional H₀ macro (oil/climate) and **trend expectation (H₂)** — off by de
 | TimescaleDB | `postgresql://funtrade:funtrade@localhost:5433/funtrade` |
 | Grafana | http://localhost:3001 (admin / admin) — **Dashboards → FunTrade** |
 | Streamlit UI | http://localhost:8501 |
+
+## Remote access with ngrok (optional)
+
+Expose the Streamlit UI on other networks (phone, another Wi‑Fi). Same pattern as [norwegian-honey](../norwegian-honey).
+
+```bash
+make ngrok-setup          # once: ngrok.yml + authtoken (copies from ../norwegian-honey if present)
+# Edit ngrok.yml: set a reserved *.ngrok-free.dev domain (ngrok dashboard), or skip and use ephemeral URL
+
+make run                  # if DB not up
+make ui                   # terminal 1 → http://localhost:8501
+make ngrok-tunnel         # terminal 2 → https://YOUR_DOMAIN
+make ngrok-url            # print active HTTPS URL
+```
+
+Ephemeral URL (no reserved domain): `make ngrok-tunnel-ephemeral` while `make ui` is running.
+
+```bash
+make help-ngrok           # all ngrok targets
+make ngrok-install        # install ngrok to ~/.local/bin
+make ngrok-check          # validate config
+```
+
+**Notes:**
+
+- `ngrok.local.yml` and `ngrok.yml` are gitignored; templates are `*.example`.
+- Reuse the same ngrok account as norwegian-honey — `make ngrok-setup` copies `../norwegian-honey/ngrok.local.yml` when it exists.
+- You need a **separate reserved domain** for FunTrade (port **8501**); do not reuse the honey tunnel domain while both run.
+- `python/.streamlit/config.toml` disables CORS/XSRF so the app works behind ngrok (`make ui` runs from `python/`).
+- On **ngrok free** mobile browsers: tap **Visit Site** on the interstitial warning page.
+- **Blank page on phone?** Open the **root URL only** (e.g. `https://your-name.ngrok-free.dev/`) — not a link preview or `/images/...` path. Streamlit is mobile-friendly; a wrong entry URL loads HTML instead of JS.
+- TimescaleDB stays on `localhost:5433` — only the UI is tunneled. Run `make run` on the same machine as `make ui`.
 
 ## Python CLIs
 

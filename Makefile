@@ -8,6 +8,18 @@ REFRESH_DAYS ?= 14
 UV ?= uv
 COMPOSE ?= docker compose
 
+# --- ngrok (local Streamlit UI, port 8501) ---
+NGROK              ?= $(shell command -v ngrok 2>/dev/null || echo $(HOME)/.local/bin/ngrok)
+NGROK_API          ?= http://127.0.0.1:4040
+NGROK_CONFIG       ?= ngrok.yml
+NGROK_LOCAL_CONFIG ?= ngrok.local.yml
+NGROK_GLOBAL_CONFIG ?= $(HOME)/.config/ngrok/ngrok.yml
+NGROK_TUNNEL       ?= funtrade
+NGROK_DOMAIN := $(shell grep -E '^\s+domain:' $(NGROK_CONFIG) 2>/dev/null | head -1 | sed 's/.*domain:[[:space:]]*//')
+NGROK_PORT   := $(or $(shell grep -E '^\s+addr:' $(NGROK_CONFIG) 2>/dev/null | head -1 | sed 's/.*addr:[[:space:]]*//'),8501)
+NGROK_URL        ?= https://$(NGROK_DOMAIN)
+HONEY_NGROK_LOCAL ?= $(abspath $(ROOT)/../norwegian-honey/ngrok.local.yml)
+
 ifneq (,$(wildcard $(ROOT)/.env))
   include $(ROOT)/.env
   export
@@ -17,7 +29,8 @@ endif
 
 .PHONY: help setup build test run run-down migrate logs \
         seed ingest ingest-factors calibrate calibrate-all detect backtest paper reconcile \
-        refresh grafana-reload ui components jacobian sweep compare clean
+        refresh grafana-reload ui components jacobian sweep compare clean \
+        help-ngrok ngrok-install ngrok-setup ngrok-check ngrok-tunnel ngrok-tunnel-ephemeral ngrok-url
 
 help: ## Show this help
 	@echo "FunTrade — useful commands"
@@ -28,6 +41,12 @@ help: ## Show this help
 	@echo "  make setup && make run && make seed"
 	@echo "  make calibrate SYMBOL=VWCE.DE && make detect && make backtest SYMBOL=VWCE.DE"
 	@echo "  make ui"
+
+help-ngrok: ## ngrok tunnel targets (public URL to local Streamlit)
+	@echo "ngrok  →  $(NGROK_URL)  (local Streamlit: http://localhost:$(NGROK_PORT))"
+	@echo ""
+	@grep -hE '^ngrok-[a-zA-Z0-9_-]+:.*##' $(ROOT)/Makefile | \
+		awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2}'
 
 setup: ## First-time setup: copy .env + config.json, install Python deps
 	@test -f $(ROOT)/.env || cp $(ROOT)/.env.example $(ROOT)/.env
@@ -106,6 +125,62 @@ refresh: build ## Recent ingest + detect + paper (REFRESH_DAYS=14, needs network
 
 ui: build ## Streamlit console → http://localhost:8501
 	cd $(PYTHON_DIR) && $(UV) run funtrade-ui
+
+# --- ngrok (optional — expose UI on other networks) ---
+
+ngrok-install: ## Install ngrok to ~/.local/bin
+	@mkdir -p $(HOME)/.local/bin
+	curl -sSL "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz" -o /tmp/ngrok.tgz
+	tar -xzf /tmp/ngrok.tgz -C $(HOME)/.local/bin ngrok
+	@echo "Installed: $$($(NGROK) version)"
+	@$(MAKE) ngrok-setup
+
+ngrok-setup: ## Create ngrok.local.yml + ngrok.yml from examples
+	@test -f $(NGROK_CONFIG) || cp ngrok.yml.example $(NGROK_CONFIG)
+	@if [ -f $(NGROK_LOCAL_CONFIG) ]; then \
+		echo "$(NGROK_LOCAL_CONFIG) exists"; \
+	elif [ -f $(HONEY_NGROK_LOCAL) ]; then \
+		cp "$(HONEY_NGROK_LOCAL)" $(NGROK_LOCAL_CONFIG); \
+		echo "Copied authtoken from norwegian-honey → $(NGROK_LOCAL_CONFIG)"; \
+	else \
+		cp ngrok.local.yml.example $(NGROK_LOCAL_CONFIG); \
+		echo "Edit $(NGROK_LOCAL_CONFIG) with your ngrok authtoken"; \
+	fi
+	@echo "Edit $(NGROK_CONFIG): set domain (or use make ngrok-tunnel-ephemeral)"
+	@echo "Then: make ui  +  make ngrok-tunnel"
+
+ngrok-check: ## Validate ngrok config
+	@test -x "$(NGROK)" || (echo "run: make ngrok-install"; exit 1)
+	@test -f "$(NGROK_CONFIG)" || (echo "run: make ngrok-setup"; exit 1)
+	@if [ -f "$(NGROK_LOCAL_CONFIG)" ]; then \
+		$(NGROK) config check --config "$(NGROK_LOCAL_CONFIG)" --config "$(NGROK_CONFIG)"; \
+	elif [ -f "$(NGROK_GLOBAL_CONFIG)" ]; then \
+		$(NGROK) config check --config "$(NGROK_GLOBAL_CONFIG)" --config "$(NGROK_CONFIG)"; \
+	else echo "run: make ngrok-setup"; exit 1; fi
+
+ngrok-tunnel: ## Start ngrok tunnel (run make ui in another terminal)
+	@test -x "$(NGROK)" || (echo "run: make ngrok-install"; exit 1)
+	@test -f "$(NGROK_CONFIG)" || (echo "run: make ngrok-setup"; exit 1)
+	@echo "$(NGROK_URL) → 127.0.0.1:$(NGROK_PORT)"
+	@echo "Mobile: open the root URL exactly (no /images/... path). Tap Visit Site if shown."
+	@if [ -f "$(NGROK_LOCAL_CONFIG)" ]; then \
+		$(NGROK) start --config "$(NGROK_LOCAL_CONFIG)" --config "$(NGROK_CONFIG)" $(NGROK_TUNNEL); \
+	elif [ -f "$(NGROK_GLOBAL_CONFIG)" ]; then \
+		$(NGROK) start --config "$(NGROK_GLOBAL_CONFIG)" --config "$(NGROK_CONFIG)" $(NGROK_TUNNEL); \
+	else echo "run: make ngrok-setup"; exit 1; fi
+
+ngrok-tunnel-ephemeral: ## Ephemeral ngrok URL (no reserved domain in ngrok.yml)
+	@test -x "$(NGROK)" || (echo "run: make ngrok-install"; exit 1)
+	@echo "Mobile: open the root URL exactly (trailing / only). Tap Visit Site if shown."
+	@PORT=$${PORT:-$(NGROK_PORT)}; \
+	if [ -f "$(NGROK_LOCAL_CONFIG)" ]; then \
+		$(NGROK) http --config "$(NGROK_LOCAL_CONFIG)" $$PORT; \
+	else $(NGROK) http --config "$(NGROK_GLOBAL_CONFIG)" $$PORT; fi
+
+ngrok-url: ## Print active ngrok HTTPS URL (or reserved domain from ngrok.yml)
+	@curl -sf $(NGROK_API)/api/tunnels 2>/dev/null \
+	| python3 -c "import sys,json; d=json.load(sys.stdin); t=next((x for x in d.get('tunnels',[]) if x.get('public_url','').startswith('https')), None); print(t['public_url'] if t else '$(NGROK_URL)')" \
+	|| echo "$(NGROK_URL)"
 
 components: build ## List H0/H1 component definitions
 	cd $(PYTHON_DIR) && $(UV) run funtrade-components

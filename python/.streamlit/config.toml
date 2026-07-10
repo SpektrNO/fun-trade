@@ -1,0 +1,13 @@
+# Streamlit config (loaded from python/ — where `make ui` runs).
+# Required for ngrok / remote access; see make ngrok-tunnel.
+
+[server]
+headless = true
+address = "0.0.0.0"
+port = 8501
+enableCORS = false
+enableXsrfProtection = false
+enableWebsocketCompression = false
+
+[browser]
+gatherUsageStats = false

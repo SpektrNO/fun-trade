@@ -1,0 +1,11 @@
+# Local ngrok credentials — NOT committed to git.
+# Copy to ngrok.local.yml and paste your token from:
+# https://dashboard.ngrok.com/get-started/your-authtoken
+#
+# Or reuse the same account as norwegian-honey:
+#   cp ../norwegian-honey/ngrok.local.yml ngrok.local.yml
+#
+# Usage: make ngrok-setup
+
+version: "2"
+authtoken: PASTE_YOUR_NGROK_AUTHTOKEN_HERE
