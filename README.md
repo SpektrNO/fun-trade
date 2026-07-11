@@ -127,7 +127,7 @@ make setup && make run && make demo SYMBOL=VWCE.DE
 | `make run` / `make run-down` | Start / stop Docker stack |
 | `make grafana-reload` | Restart Grafana after dashboard changes |
 | `make seed` | Synthetic price data (CI / offline) |
-| `make ingest` | Watchlist daily bars (Stooq → yfinance fallback) |
+| `make ingest` | Watchlist daily bars (all, `SYMBOL=…`, or `SYMBOLS='A B'`) |
 | `make ingest-factors` | H₀ macro series (EUR/USD, rates, credit spread; optional oil/climate via `.env`) |
 | `make calibrate SYMBOL=VWCE.DE` | Fit H₀ OU equilibrium (one symbol) |
 | `make calibrate-all` | Fit H₀ for entire watchlist (`config.json`) |
@@ -143,7 +143,7 @@ make setup && make run && make demo SYMBOL=VWCE.DE
 | `make test` | pytest (no network) |
 | `make reconcile SYMBOL=VWCE.DE` | Stooq vs EOD price check |
 
-Override defaults: `SYMBOL=VWCE.DE DAYS=730 make ingest` · `REFRESH_DAYS=30 make refresh`
+Override defaults: `SYMBOL=VWCE.DE DAYS=730 make ingest` · `SYMBOLS='VWCE.DE EXSA.DE' DAYS=30 make ingest` · `REFRESH_DAYS=30 make refresh`
 
 ## Architecture
 
@@ -284,7 +284,12 @@ List aliases and whether they are in your watchlist:
 uv run funtrade-symbols
 ```
 
-After adding a symbol to `config.json`, run `make ingest SYMBOL=NO0010336977` then `make calibrate-all`.
+After adding symbols to `config.json`, ingest them then calibrate:
+
+```bash
+make ingest SYMBOLS='NO0010336977 VWCE.DE'
+make calibrate-all   # or: make calibrate SYMBOL=VWCE.DE
+```
 
 Optional H₀ macro (oil/climate) and **trend expectation (H₂)** — off by default; see `.env.example` and [docs/component-model.md](docs/component-model.md). Active components: `uv run funtrade-components`.
 

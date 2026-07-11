@@ -83,8 +83,14 @@ migrate: ## Apply SQL migrations to running DB
 seed: build ## Load synthetic daily bars (offline, no API)
 	cd $(PYTHON_DIR) && $(UV) run funtrade-seed --days $(DAYS)
 
-ingest: build ## Ingest watchlist from Stooq/yfinance (needs network)
+ingest: build ## Ingest prices (all watchlist, SYMBOL=one, or SYMBOLS='A B')
+ifeq ($(origin SYMBOLS),command line)
+	cd $(PYTHON_DIR) && $(UV) run funtrade-ingest --days $(DAYS) --symbols $(SYMBOLS)
+else ifeq ($(origin SYMBOL),command line)
+	cd $(PYTHON_DIR) && $(UV) run funtrade-ingest --days $(DAYS) --symbol $(SYMBOL)
+else
 	cd $(PYTHON_DIR) && $(UV) run funtrade-ingest --days $(DAYS)
+endif
 
 ingest-factors: build ## Ingest H0 macro factors (core + optional oil/climate from .env)
 	cd $(PYTHON_DIR) && $(UV) run funtrade-ingest-factors --days $(DAYS)

@@ -195,14 +195,30 @@ def jacobian(argv: list[str] | None = None) -> None:
     )
 
 
+def _resolve_ingest_symbols(*, symbol: str | None, symbols: list[str] | None) -> list[str] | None:
+    """One symbol, explicit list, or None for full watchlist."""
+    if symbols:
+        return symbols
+    if symbol:
+        return [symbol]
+    return None
+
+
 def ingest(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Ingest watchlist price bars from Stooq")
     parser.add_argument("--days", type=int, default=730)
-    parser.add_argument("--symbol", default=None)
+    parser.add_argument("--symbol", default=None, help="Single watchlist symbol")
+    parser.add_argument(
+        "--symbols",
+        nargs="+",
+        default=None,
+        metavar="SYMBOL",
+        help="Whitespace-separated symbols (e.g. --symbols VWCE.DE EXSA.DE)",
+    )
     args = parser.parse_args(argv)
 
-    symbols = [args.symbol] if args.symbol else None
-    counts = ingest_watchlist(days=args.days, symbols=symbols)
+    resolved = _resolve_ingest_symbols(symbol=args.symbol, symbols=args.symbols)
+    counts = ingest_watchlist(days=args.days, symbols=resolved)
     print(json.dumps({"rows_upserted": counts}, indent=2))
 
 
