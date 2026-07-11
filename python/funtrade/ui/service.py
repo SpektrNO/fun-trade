@@ -14,13 +14,24 @@ from funtrade.backtest.engine import (
     buy_and_hold_from_prices,
     resolve_h0_equilibrium,
     run_backtest,
+    run_momentum_backtest,
 )
 from funtrade.config import Settings
 from funtrade.data.factors import ingest_macro_factors
 from funtrade.data.ingest import ingest_watchlist
-from funtrade.data.loader import MARKET_ADJ_CLOSE, load_latest_equilibrium_params, load_price_bars
+from funtrade.data.loader import (
+    MARKET_ADJ_CLOSE,
+    load_latest_equilibrium_params,
+    load_latest_perturbation_snapshots,
+    load_price_bars,
+)
 from funtrade.execution.paper import PaperSettings, get_portfolio_summary
+from funtrade.models.momentum import (
+    detect_latest_momentum,
+    signal_from_momentum,
+)
 from funtrade.models.perturbation import (
+    compute_latest_z_trend,
     compute_perturbation_series,
     detect_latest_perturbations,
     signal_from_epsilon,
@@ -30,6 +41,10 @@ from funtrade.paper.runner import run_paper_once
 
 CHART_WINDOW_RECENT = "recent_120"
 CHART_WINDOW_BACKTEST_TEST = "backtest_test"
+
+MODEL_PERTURBATION = "perturbation"
+MODEL_MOMENTUM_BENCHMARK = "momentum_benchmark"
+RECOMMENDATION_MODELS = (MODEL_PERTURBATION, MODEL_MOMENTUM_BENCHMARK)
 
 
 def backtest_params_fingerprint(params: UiParams) -> str:
@@ -53,8 +68,6 @@ def backtest_params_fingerprint(params: UiParams) -> str:
 
 def backtest_data_revision(symbol: str, *, settings: Settings | None = None) -> str:
     """Fingerprint of ingested price bars — invalidates cached UI after ingest/refresh."""
-    from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars
-
     settings = settings or Settings.from_env()
     bars = load_price_bars(symbol, MARKET_ADJ_CLOSE, settings=settings.for_symbol(symbol))
     if bars.empty:
@@ -186,15 +199,37 @@ def fetch_recommendations(
     params: UiParams,
     *,
     assume_holding_all: bool = False,
+    model: str = MODEL_PERTURBATION,
 ) -> pd.DataFrame:
     """Latest model hints for every symbol in config.json (Nordnet manual trading)."""
+    if model == MODEL_MOMENTUM_BENCHMARK:
+        return _fetch_momentum_recommendations(params, assume_holding_all=assume_holding_all)
+    return _fetch_perturbation_recommendations(params, assume_holding_all=assume_holding_all)
+
+
+def _fetch_perturbation_recommendations(
+    params: UiParams,
+    *,
+    assume_holding_all: bool = False,
+) -> pd.DataFrame:
+    """Apply BUY/SELL rules to latest persisted ε rows (no full-series recompute)."""
     base = Settings.from_env()
     symbols = base.watchlist
     if not symbols:
         return pd.DataFrame()
 
-    perturbations = detect_latest_perturbations(symbols=symbols, settings=base, persist=False)
-    by_symbol = {p.symbol: p for p in perturbations}
+    snapshots = load_latest_perturbation_snapshots(symbols, settings=base)
+    need_z_trend = base.trend_enable and any(
+        settings_for_symbol(params, s).trend_gate_sells for s in symbols
+    )
+    z_trend_by_symbol: dict[str, float] = {}
+    if need_z_trend:
+        for symbol in symbols:
+            if symbol not in snapshots:
+                continue
+            sym_settings = settings_for_symbol(params, symbol)
+            if sym_settings.trend_gate_sells and sym_settings.trend_enable:
+                z_trend_by_symbol[symbol] = compute_latest_z_trend(symbol, settings=sym_settings)
 
     summary = get_portfolio_summary(settings=base, paper=params.to_paper_settings())
     positions = {pos["symbol"]: float(pos["net_qty_shares"]) for pos in summary.get("positions", [])}
@@ -202,9 +237,10 @@ def fetch_recommendations(
 
     rows: list[dict] = []
     errors: list[str] = []
+    latest_detect: pd.Timestamp | None = None
     for symbol in symbols:
         sym_settings = settings_for_symbol(params, symbol)
-        p = by_symbol.get(symbol)
+        p = snapshots.get(symbol)
         paper_qty = positions.get(symbol, 0.0)
         if p is None:
             errors.append(symbol)
@@ -222,16 +258,19 @@ def fetch_recommendations(
                     "position_assumed": False,
                     "signal": None,
                     "action": "—",
-                    "note": "No data (ingest + calibrate)",
+                    "note": "No ε data — run sidebar **Run refresh** or `make detect`",
                 }
             )
             continue
 
+        if p.computed_at is not None:
+            latest_detect = p.computed_at if latest_detect is None else max(latest_detect, p.computed_at)
+
         pos_assumed = assume_holding_all and paper_qty <= 0
-        price = float(p.inputs.get("price", 0.0))
+        price = float(p.price or 0.0)
         assumed_qty = assumed_eur / price if price > 0 else assumed_eur / 100.0
         pos_qty = paper_qty if paper_qty > 0 else (assumed_qty if assume_holding_all else 0.0)
-        z_trend = float(p.inputs.get("z_trend", 0.0))
+        z_trend = z_trend_by_symbol.get(symbol, 0.0)
         threshold = sym_settings.epsilon_threshold
         sig = signal_from_epsilon(
             p.epsilon,
@@ -246,7 +285,7 @@ def fetch_recommendations(
                 "symbol": symbol,
                 "asset_class": p.asset_class,
                 "as_of": p.time.strftime("%Y-%m-%d") if hasattr(p.time, "strftime") else str(p.time),
-                "price": float(p.inputs.get("price", 0.0)),
+                "price": price,
                 "epsilon": round(p.epsilon, 3),
                 "threshold": threshold,
                 "regime_valid": p.regime_valid,
@@ -272,7 +311,120 @@ def fetch_recommendations(
     if errors and not df.empty:
         df.attrs["errors"] = errors
     df.attrs["assume_holding_all"] = assume_holding_all
+    df.attrs["model"] = MODEL_PERTURBATION
+    if latest_detect is not None:
+        df.attrs["detected_at"] = str(latest_detect)[:19]
     return df
+
+
+def _fetch_momentum_recommendations(
+    params: UiParams,
+    *,
+    assume_holding_all: bool = False,
+) -> pd.DataFrame:
+    """MA crossover + momentum benchmark recommendations."""
+    base = Settings.from_env()
+    symbols = base.watchlist
+    if not symbols or base.universe is None:
+        return pd.DataFrame()
+
+    config = base.universe.momentum_benchmark
+    snapshots = detect_latest_momentum(symbols=symbols, settings=base)
+    by_symbol = {p.symbol: p for p in snapshots}
+
+    summary = get_portfolio_summary(settings=base, paper=params.to_paper_settings())
+    positions = {pos["symbol"]: float(pos["net_qty_shares"]) for pos in summary.get("positions", [])}
+    assumed_eur = params.to_paper_settings().slice_notional_eur()
+
+    rows: list[dict] = []
+    errors: list[str] = []
+    for symbol in symbols:
+        sym_settings = settings_for_symbol(params, symbol)
+        p = by_symbol.get(symbol)
+        paper_qty = positions.get(symbol, 0.0)
+        if p is None:
+            errors.append(symbol)
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "asset_class": sym_settings.asset_class or "etf",
+                    "as_of": None,
+                    "price": None,
+                    "fast_ma": None,
+                    "slow_ma": None,
+                    "momentum_pct": None,
+                    "ma_bullish": None,
+                    "position_shares": paper_qty,
+                    "position_assumed": False,
+                    "signal": None,
+                    "action": "—",
+                    "note": "No data (ingest required)",
+                }
+            )
+            continue
+
+        pos_assumed = assume_holding_all and paper_qty <= 0
+        price = float(p.price)
+        assumed_qty = assumed_eur / price if price > 0 else assumed_eur / 100.0
+        pos_qty = paper_qty if paper_qty > 0 else (assumed_qty if assume_holding_all else 0.0)
+        sig = signal_from_momentum(
+            fast_ma=p.fast_ma,
+            slow_ma=p.slow_ma,
+            momentum=p.momentum,
+            current_position=pos_qty,
+            config=config,
+        )
+        rows.append(
+            {
+                "symbol": symbol,
+                "asset_class": p.asset_class,
+                "as_of": p.time.strftime("%Y-%m-%d") if hasattr(p.time, "strftime") else str(p.time),
+                "price": price,
+                "fast_ma": round(p.fast_ma, 2),
+                "slow_ma": round(p.slow_ma, 2),
+                "momentum_pct": round(p.momentum * 100, 1) if not pd.isna(p.momentum) else None,
+                "ma_bullish": p.ma_bullish,
+                "position_shares": pos_qty,
+                "position_assumed": pos_assumed,
+                "signal": sig,
+                "action": _signal_action(sig),
+                "note": _momentum_recommendation_note(
+                    signal=sig,
+                    ma_bullish=p.ma_bullish,
+                    momentum=p.momentum,
+                    config=config,
+                    position_shares=pos_qty,
+                ),
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    if errors and not df.empty:
+        df.attrs["errors"] = errors
+    df.attrs["assume_holding_all"] = assume_holding_all
+    df.attrs["model"] = MODEL_MOMENTUM_BENCHMARK
+    return df
+
+
+def _momentum_recommendation_note(
+    *,
+    signal: int,
+    ma_bullish: bool,
+    momentum: float,
+    config,
+    position_shares: float,
+) -> str:
+    if signal > 0:
+        return "MA bullish + momentum confirm"
+    if signal < 0:
+        return "MA bearish — exit long"
+    if ma_bullish and config.require_momentum_for_buy:
+        if pd.isna(momentum) or momentum < config.momentum_threshold:
+            return "MA bullish, weak momentum"
+        return "Already long"
+    if not ma_bullish and position_shares <= 0:
+        return "MA bearish, flat"
+    return "Hold"
 
 
 def _backtest_position_limit_default() -> float:
@@ -505,6 +657,61 @@ def run_backtest_for_ui(params: UiParams) -> dict:
         price_as_of = str(result.price.index[-1])
     data_revision = backtest_data_revision(params.symbol, settings=settings)
     bh = buy_and_hold_from_prices(result.price, params.paper_initial_cash)
+
+    momentum_result = None
+    momentum_error: str | None = None
+    try:
+        momentum_result = run_momentum_backtest(
+            params.symbol,
+            test_start=result.test_start,
+            initial_cash_eur=params.paper_initial_cash,
+            position_limit_shares=params.backtest_position_limit_shares,
+            settings=settings,
+        )
+    except Exception as exc:
+        momentum_error = str(exc)
+
+    model_comparison_chart = pd.DataFrame()
+    if momentum_result is not None:
+        pert_eq = result.equity_curve.reindex(momentum_result.equity_curve.index, method="ffill")
+        model_comparison_chart = pd.DataFrame(
+            {
+                "time": momentum_result.equity_curve.index,
+                "Perturbation": pert_eq.values,
+                "Momentum benchmark": momentum_result.equity_curve.values,
+            }
+        )
+
+    momentum_view: dict = {"error": momentum_error}
+    if momentum_result is not None:
+        mm = momentum_result.metrics
+        momentum_view = {
+            "error": None,
+            "net_profit_eur": mm.get("net_profit_eur", momentum_result.total_return),
+            "return_pct": mm.get("return_pct", 0.0),
+            "final_portfolio_eur": mm.get("final_portfolio_eur", params.paper_initial_cash),
+            "sharpe": momentum_result.sharpe,
+            "max_drawdown": momentum_result.max_drawdown,
+            "total_trades": momentum_result.total_trades,
+            "fast_ma_days": mm.get("fast_ma_days"),
+            "slow_ma_days": mm.get("slow_ma_days"),
+            "momentum_lookback_days": mm.get("momentum_lookback_days"),
+            "equity_curve": pd.DataFrame(
+                {
+                    "time": momentum_result.equity_curve.index,
+                    "portfolio_eur": momentum_result.equity_curve.values,
+                }
+            ),
+            "ma_chart": pd.DataFrame(
+                {
+                    "time": momentum_result.price.index,
+                    "price": momentum_result.price.values,
+                    "Fast MA": momentum_result.fast_ma.values,
+                    "Slow MA": momentum_result.slow_ma.values,
+                }
+            ),
+        }
+
     return {
         "cache_key": backtest_cache_key(params),
         "fingerprint": backtest_params_fingerprint(params),
@@ -578,6 +785,8 @@ def run_backtest_for_ui(params: UiParams) -> dict:
                 "Fair + perturbation (ε)": result.fair_plus_perturbation.astype(float).values,
             }
         ).copy(),
+        "model_comparison_chart": model_comparison_chart,
+        "momentum_benchmark": momentum_view,
     }
 
 

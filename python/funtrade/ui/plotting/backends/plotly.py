@@ -37,7 +37,7 @@ def _show(fig: go.Figure, *, key: str) -> None:
     fig.update_layout(**_LAYOUT)
     fig.update_xaxes(**_AXIS_ZOOMABLE)
     fig.update_yaxes(**_AXIS_ZOOMABLE)
-    st.plotly_chart(fig, use_container_width=True, key=key)
+    st.plotly_chart(fig, width="stretch", key=key)
 
 
 def _time_series_figure(df: pd.DataFrame, *, x: str, y: str | list[str], title: str | None) -> go.Figure:

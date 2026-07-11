@@ -3,12 +3,75 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 
 import pandas as pd
 
 from funtrade.config import Settings, get_connection, read_sql_df
 
 MARKET_ADJ_CLOSE = "adj_close"
+
+
+@dataclass(frozen=True)
+class PerturbationSnapshot:
+    """Latest persisted ε row for one symbol (from detect / make refresh)."""
+
+    time: pd.Timestamp
+    symbol: str
+    asset_class: str
+    epsilon: float
+    magnitude: float
+    regime_valid: bool
+    price: float | None
+    z_return: float | None
+    z_volume: float | None
+    z_rel_strength: float | None
+    computed_at: pd.Timestamp | None
+
+
+def load_latest_perturbation_snapshots(
+    symbols: list[str] | None = None,
+    *,
+    settings: Settings | None = None,
+) -> dict[str, PerturbationSnapshot]:
+    """One latest row per symbol from perturbation_daily — fast path for recommendations."""
+    settings = settings or Settings.from_env()
+    symbols = symbols or settings.watchlist
+    if not symbols:
+        return {}
+
+    df = read_sql_df(
+        """
+        SELECT DISTINCT ON (symbol)
+          time, symbol, asset_class, epsilon, magnitude, regime_valid,
+          z_return, z_volume, z_rel_strength, price, computed_at
+        FROM perturbation_daily
+        WHERE symbol = ANY(%(symbols)s)
+        ORDER BY symbol, time DESC
+        """,
+        {"symbols": symbols},
+        settings=settings,
+    )
+    if df.empty:
+        return {}
+
+    out: dict[str, PerturbationSnapshot] = {}
+    for row in df.itertuples(index=False):
+        sym = str(row.symbol)
+        out[sym] = PerturbationSnapshot(
+            time=pd.Timestamp(row.time),
+            symbol=sym,
+            asset_class=str(row.asset_class or "etf"),
+            epsilon=float(row.epsilon),
+            magnitude=float(row.magnitude),
+            regime_valid=bool(row.regime_valid),
+            price=float(row.price) if row.price is not None else None,
+            z_return=float(row.z_return) if row.z_return is not None else None,
+            z_volume=float(row.z_volume) if row.z_volume is not None else None,
+            z_rel_strength=float(row.z_rel_strength) if row.z_rel_strength is not None else None,
+            computed_at=pd.Timestamp(row.computed_at) if row.computed_at is not None else None,
+        )
+    return out
 
 
 def trade_date_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:

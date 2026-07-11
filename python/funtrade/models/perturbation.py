@@ -148,6 +148,47 @@ def compute_perturbation_series(
     return pd.DataFrame(out, index=df.index)
 
 
+def compute_latest_z_trend(
+    symbol: str,
+    *,
+    settings: Settings | None = None,
+    benchmark_symbol: str | None = None,
+) -> float:
+    """Latest z_trend only — tail-sliced price load for recommendations (not full ε recompute)."""
+    if settings is None:
+        settings = Settings.from_env().for_symbol(symbol)
+    if not settings.trend_enable:
+        return 0.0
+
+    from funtrade.models.components import sector_etf_for
+
+    tail = settings.trend_lookback_days + 280
+    df = load_price_bars(symbol, MARKET_ADJ_CLOSE, settings=settings)
+    if df.empty:
+        return 0.0
+    if len(df) > tail:
+        df = df.tail(tail)
+
+    price = df["price"].astype(float)
+    bench_sym = benchmark_symbol or sector_etf_for(symbol, settings.benchmark)
+    bench_df = load_price_bars(bench_sym, MARKET_ADJ_CLOSE, settings=settings)
+    bench_price = None
+    if not bench_df.empty:
+        if len(bench_df) > tail:
+            bench_df = bench_df.tail(tail)
+        bench_price = bench_df["price"].astype(float).reindex(price.index, method="ffill")
+
+    z_trend = _compute_z_trend(
+        price,
+        bench_price,
+        lookback=settings.trend_lookback_days,
+        use_benchmark=settings.trend_use_benchmark,
+    )
+    if z_trend.empty:
+        return 0.0
+    return float(z_trend.iloc[-1])
+
+
 def _compute_regime_validity(
     magnitude: pd.Series,
     price: pd.Series,

@@ -25,6 +25,9 @@ from funtrade.ui.service import (
     active_equilibrium_status,
     default_ui_params,
     fetch_recommendations,
+    MODEL_MOMENTUM_BENCHMARK,
+    MODEL_PERTURBATION,
+    RECOMMENDATION_MODELS,
     perturbation_context,
     run_backtest_for_ui,
     backtest_params_fingerprint,
@@ -74,7 +77,7 @@ def _store_backtest_view(view: dict) -> None:
     st.session_state.backtest_run_id = st.session_state.get("backtest_run_id", 0) + 1
     stored = dict(view)
     stored["run_id"] = st.session_state.backtest_run_id
-    for key in ("equity_curve", "pnl_curve", "epsilon", "trade_chart", "price_chart"):
+    for key in ("equity_curve", "pnl_curve", "epsilon", "trade_chart", "price_chart", "model_comparison_chart"):
         df = stored.get(key)
         if isinstance(df, pd.DataFrame):
             stored[key] = df.copy(deep=True)
@@ -353,14 +356,14 @@ with tab_wallet:
     c4.metric("Total PnL", f"{summary['total_pnl']:,.2f}")
 
     if summary["positions"]:
-        st.dataframe(pd.DataFrame(summary["positions"]), use_container_width=True)
+        st.dataframe(pd.DataFrame(summary["positions"]), width="stretch")
     else:
         st.info("No open positions.")
 
     trades = load_recent_trades(limit=20, settings=params.to_settings())
     if not trades.empty:
         st.subheader("Recent Trades")
-        st.dataframe(trades, use_container_width=True)
+        st.dataframe(trades, width="stretch")
 
     if st.button("Reset paper portfolio"):
         reset_paper_portfolio(paper=params.to_paper_settings(), settings=params.to_settings())
@@ -535,9 +538,51 @@ with tab_backtest:
                     view["equity_curve"],
                     x="time",
                     y="portfolio_eur",
-                    title="Portfolio value over test period",
+                    title="Portfolio value over test period (Perturbation)",
                     chart_key=f"{chart_key}-equity",
                 )
+
+            comp = view.get("model_comparison_chart")
+            if isinstance(comp, pd.DataFrame) and not comp.empty:
+                st.subheader("Model comparison")
+                mom = view.get("momentum_benchmark") or {}
+                c1, c2, c3, c4 = st.columns(4)
+                _backtest_stat(
+                    c1,
+                    "Perturbation net profit",
+                    f"{view['net_profit_eur']:+,.2f} ({view['return_pct']:+.2f}%)",
+                )
+                if mom.get("error"):
+                    _backtest_stat(c2, "Momentum benchmark", "—")
+                    st.caption(f"Momentum backtest skipped: {mom['error']}")
+                else:
+                    _backtest_stat(
+                        c2,
+                        "Momentum net profit",
+                        f"{mom.get('net_profit_eur', 0):+,.2f} ({mom.get('return_pct', 0):+.2f}%)",
+                    )
+                    _backtest_stat(c3, "Momentum Sharpe", f"{mom.get('sharpe', 0):.2f}")
+                    _backtest_stat(c4, "Momentum trades", str(mom.get("total_trades", 0)))
+                st.caption(
+                    "Both strategies use the same test window, wallet size, and trade-slice rules. "
+                    "Momentum benchmark: dual MA crossover with optional momentum filter (config.json → momentum_benchmark)."
+                )
+                chart_renderer.render_time_series(
+                    comp,
+                    x="time",
+                    y=["Perturbation", "Momentum benchmark"],
+                    title="Perturbation vs momentum benchmark — portfolio value",
+                    chart_key=f"{chart_key}-model-compare",
+                )
+                ma_chart = mom.get("ma_chart") if isinstance(mom, dict) else None
+                if isinstance(ma_chart, pd.DataFrame) and not ma_chart.empty:
+                    chart_renderer.render_time_series(
+                        ma_chart,
+                        x="time",
+                        y=["price", "Fast MA", "Slow MA"],
+                        title="Momentum benchmark — price and moving averages",
+                        chart_key=f"{chart_key}-momentum-ma",
+                    )
 
 with tab_trade:
     st.subheader(f"Trade — {params.symbol}")
@@ -612,10 +657,33 @@ with tab_trade:
 
 with tab_recommendations:
     st.subheader("Recommendations")
-    st.caption(
-        "Model hints for **every symbol** in `config.json`, using each asset class’s ε threshold. "
-        "For Nordnet: act only on **BUY** / **SELL** rows; cross-check the Trade tab for one symbol."
+    _model_labels = {
+        MODEL_PERTURBATION: "Perturbation (ε mean reversion)",
+        MODEL_MOMENTUM_BENCHMARK: "Momentum benchmark (MA crossover)",
+    }
+    rec_model = st.radio(
+        "Model",
+        options=list(RECOMMENDATION_MODELS),
+        format_func=lambda k: _model_labels[k],
+        horizontal=True,
+        key="rec_model",
     )
+    prev_model = st.session_state.get("rec_model_prev", MODEL_PERTURBATION)
+    if rec_model != prev_model:
+        st.session_state.rec_model_prev = rec_model
+        st.session_state.pop("recommendations_df", None)
+
+    if rec_model == MODEL_PERTURBATION:
+        st.caption(
+            "Reads latest **ε** and **regime_valid** from the database (last detect/refresh), "
+            "then applies each asset class’s threshold — no full recompute. "
+            "Use sidebar **Run refresh** to update ε. Act on **BUY** / **SELL** only."
+        )
+    else:
+        st.caption(
+            "Traditional **moving-average crossover** with momentum filter (`config.json` → `momentum_benchmark`). "
+            "Buy when fast MA > slow MA (and momentum confirms); sell on crossunder when long."
+        )
     assume_holding_all = st.toggle(
         "Assume I hold every symbol",
         value=bool(st.session_state.get("rec_assume_holding_all", False)),
@@ -626,10 +694,10 @@ with tab_recommendations:
     if assume_holding_all != prev_assume:
         st.session_state.rec_assume_holding_all = assume_holding_all
 
-    if st.button("Refresh recommendations", type="primary") or assume_holding_all != prev_assume:
+    if st.button("Refresh recommendations", type="primary") or assume_holding_all != prev_assume or rec_model != prev_model:
         try:
             st.session_state.recommendations_df = fetch_recommendations(
-                params, assume_holding_all=assume_holding_all,
+                params, assume_holding_all=assume_holding_all, model=rec_model,
             )
         except Exception as e:
             st.error(str(e))
@@ -671,28 +739,51 @@ with tab_recommendations:
                     "threshold": "ε thresh",
                     "regime_valid": "Regime OK",
                     "z_trend": "z_trend",
+                    "fast_ma": "Fast MA",
+                    "slow_ma": "Slow MA",
+                    "momentum_pct": "Momentum %",
+                    "ma_bullish": "MA bullish",
                     "position_label": "Position",
                     "action": "Action",
                     "note": "Note",
                 }
             )
             show_cols = [c for c in display.columns if c not in ("signal", "position_shares", "position_assumed")]
+            if rec_model == MODEL_MOMENTUM_BENCHMARK:
+                show_cols = [
+                    c for c in show_cols
+                    if c not in ("ε", "ε thresh", "Regime OK", "z_trend")
+                ]
+            else:
+                show_cols = [
+                    c for c in show_cols
+                    if c not in ("Fast MA", "Slow MA", "Momentum %", "MA bullish")
+                ]
             table = display[show_cols]
             st.dataframe(
                 table.style.apply(_recommendation_row_styles, axis=1),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "Price": st.column_config.NumberColumn(format="%.2f"),
                     "ε": st.column_config.NumberColumn(format="%.3f"),
                     "ε thresh": st.column_config.NumberColumn(format="%.2f"),
                     "Regime OK": st.column_config.CheckboxColumn(),
+                    "Fast MA": st.column_config.NumberColumn(format="%.2f"),
+                    "Slow MA": st.column_config.NumberColumn(format="%.2f"),
+                    "Momentum %": st.column_config.NumberColumn(format="%.1f"),
+                    "MA bullish": st.column_config.CheckboxColumn(),
                 },
             )
             if rec.attrs.get("assume_holding_all"):
                 st.caption("*Assumed holding (not in paper wallet). Qty ≈ one trade slice (PAPER_TRADE_SLICE_PCT).")
+            detected_at = rec.attrs.get("detected_at")
+            if detected_at and rec.attrs.get("model") == MODEL_PERTURBATION:
+                st.caption(f"ε snapshot from detect run at **{detected_at}** UTC.")
             errors = rec.attrs.get("errors", [])
             if errors:
-                st.warning(f"No model output for: {', '.join(errors)} — run `make ingest` and `make calibrate-all`.")
+                st.warning(
+                    f"No persisted ε for: {', '.join(errors)} — run sidebar **Run refresh** or `make detect`."
+                )
     else:
         st.info("Click **Refresh recommendations** to load the watchlist.")

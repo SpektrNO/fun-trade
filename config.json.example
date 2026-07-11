@@ -1,6 +1,14 @@
 {
   "benchmark": "EXSA.DE",
   "currency": "EUR",
+  "momentum_benchmark": {
+    "fast_ma_days": 50,
+    "slow_ma_days": 200,
+    "momentum_lookback_days": 63,
+    "momentum_threshold": 0.0,
+    "require_momentum_for_buy": true,
+    "exit_on_ma_crossunder": true
+  },
   "aliases": {
     "NO0010336977": "0P00000O4C.IR",
     "DNB-BARNE.IR": "0P00000O4C.IR",

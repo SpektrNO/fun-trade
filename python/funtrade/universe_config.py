@@ -68,6 +68,28 @@ _DEFAULT_SHARE: dict[str, Any] = {
 }
 
 
+_DEFAULT_MOMENTUM_BENCHMARK: dict[str, Any] = {
+    "fast_ma_days": 50,
+    "slow_ma_days": 200,
+    "momentum_lookback_days": 63,
+    "momentum_threshold": 0.0,
+    "require_momentum_for_buy": True,
+    "exit_on_ma_crossunder": True,
+}
+
+
+@dataclass(frozen=True)
+class MomentumBenchmarkConfig:
+    """Traditional MA crossover + momentum filter (strategy benchmark vs perturbation)."""
+
+    fast_ma_days: int
+    slow_ma_days: int
+    momentum_lookback_days: int
+    momentum_threshold: float
+    require_momentum_for_buy: bool
+    exit_on_ma_crossunder: bool
+
+
 @dataclass(frozen=True)
 class AssetClassConfig:
     asset_class: AssetClassName
@@ -95,6 +117,7 @@ class UniverseConfig:
     benchmark: str
     currency: str
     aliases: dict[str, str]
+    momentum_benchmark: MomentumBenchmarkConfig
     etf: AssetClassConfig
     mutual_fund: AssetClassConfig
     share: AssetClassConfig
@@ -165,6 +188,18 @@ def _parse_asset_class(name: AssetClassName, raw: dict[str, Any] | None, default
     )
 
 
+def _parse_momentum_benchmark(raw: dict[str, Any] | None) -> MomentumBenchmarkConfig:
+    data = {**_DEFAULT_MOMENTUM_BENCHMARK, **(raw or {})}
+    return MomentumBenchmarkConfig(
+        fast_ma_days=int(data["fast_ma_days"]),
+        slow_ma_days=int(data["slow_ma_days"]),
+        momentum_lookback_days=int(data["momentum_lookback_days"]),
+        momentum_threshold=float(data["momentum_threshold"]),
+        require_momentum_for_buy=bool(data["require_momentum_for_buy"]),
+        exit_on_ma_crossunder=bool(data["exit_on_ma_crossunder"]),
+    )
+
+
 def _parse_aliases(raw: Any) -> dict[str, str]:
     if not raw:
         return {}
@@ -197,6 +232,7 @@ def load_universe_config(*, force_reload: bool = False) -> UniverseConfig:
         benchmark=benchmark,
         currency=currency,
         aliases=aliases,
+        momentum_benchmark=_parse_momentum_benchmark(payload.get("momentum_benchmark")),
         etf=_parse_asset_class("etf", payload.get("etf"), _DEFAULT_ETF),
         mutual_fund=_parse_asset_class("mutual_fund", payload.get("mutual_fund"), _DEFAULT_MUTUAL_FUND),
         share=_parse_asset_class("share", payload.get("share"), _DEFAULT_SHARE),
