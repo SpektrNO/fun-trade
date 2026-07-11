@@ -26,6 +26,7 @@ class PerturbationSnapshot:
     z_return: float | None
     z_volume: float | None
     z_rel_strength: float | None
+    z_trend: float | None
     computed_at: pd.Timestamp | None
 
 
@@ -40,18 +41,31 @@ def load_latest_perturbation_snapshots(
     if not symbols:
         return {}
 
-    df = read_sql_df(
-        """
+    query = """
+        SELECT DISTINCT ON (symbol)
+          time, symbol, asset_class, epsilon, magnitude, regime_valid,
+          z_return, z_volume, z_rel_strength, price, z_trend, computed_at
+        FROM perturbation_daily
+        WHERE symbol = ANY(%(symbols)s)
+        ORDER BY symbol, time DESC
+    """
+    fallback_query = """
         SELECT DISTINCT ON (symbol)
           time, symbol, asset_class, epsilon, magnitude, regime_valid,
           z_return, z_volume, z_rel_strength, price, computed_at
         FROM perturbation_daily
         WHERE symbol = ANY(%(symbols)s)
         ORDER BY symbol, time DESC
-        """,
-        {"symbols": symbols},
-        settings=settings,
-    )
+    """
+    params = {"symbols": symbols}
+    try:
+        df = read_sql_df(query, params, settings=settings)
+        has_z_trend = True
+    except Exception as exc:
+        if "z_trend" not in str(exc).lower():
+            raise
+        df = read_sql_df(fallback_query, params, settings=settings)
+        has_z_trend = False
     if df.empty:
         return {}
 
@@ -69,6 +83,7 @@ def load_latest_perturbation_snapshots(
             z_return=float(row.z_return) if row.z_return is not None else None,
             z_volume=float(row.z_volume) if row.z_volume is not None else None,
             z_rel_strength=float(row.z_rel_strength) if row.z_rel_strength is not None else None,
+            z_trend=float(row.z_trend) if has_z_trend and getattr(row, "z_trend", None) is not None else None,
             computed_at=pd.Timestamp(row.computed_at) if row.computed_at is not None else None,
         )
     return out
@@ -135,6 +150,52 @@ def load_price_bars(
     df["time"] = pd.to_datetime(df["time"], utc=True)
     df = df.set_index("time")
     return normalize_daily_bars(df)
+
+
+def load_price_bars_batch(
+    symbols: list[str],
+    *,
+    market: str = MARKET_ADJ_CLOSE,
+    tail_bars: int | None = None,
+    settings: Settings | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Load price bars for many symbols in one query (optional tail per symbol)."""
+    if not symbols:
+        return {}
+    settings = settings or Settings.from_env()
+    if tail_bars is not None:
+        query = """
+            WITH ranked AS (
+              SELECT time, symbol, market, price, volume, source,
+                     ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY time DESC) AS rn
+              FROM price_bars
+              WHERE symbol = ANY(%(symbols)s) AND market = %(market)s
+            )
+            SELECT time, symbol, market, price, volume, source
+            FROM ranked
+            WHERE rn <= %(tail_bars)s
+            ORDER BY symbol, time ASC
+        """
+        params: dict = {"symbols": symbols, "market": market, "tail_bars": int(tail_bars)}
+    else:
+        query = """
+            SELECT time, symbol, market, price, volume, source
+            FROM price_bars
+            WHERE symbol = ANY(%(symbols)s) AND market = %(market)s
+            ORDER BY symbol, time ASC
+        """
+        params = {"symbols": symbols, "market": market}
+
+    df = read_sql_df(query, params, settings=settings)
+    if df.empty:
+        return {}
+
+    df["time"] = pd.to_datetime(df["time"], utc=True)
+    out: dict[str, pd.DataFrame] = {}
+    for sym, grp in df.groupby("symbol"):
+        frame = grp.set_index("time").drop(columns=["symbol"], errors="ignore")
+        out[str(sym)] = normalize_daily_bars(frame)
+    return out
 
 
 def upsert_price_bars(
@@ -286,6 +347,7 @@ def upsert_perturbation_daily(
                 float(row["z_volume"]) if pd.notna(row.get("z_volume")) else None,
                 float(row["z_rel_strength"]) if pd.notna(row.get("z_rel_strength")) else None,
                 float(row["price"]) if pd.notna(row.get("price")) else None,
+                float(row["z_trend"]) if pd.notna(row.get("z_trend")) else None,
             )
         )
 
@@ -295,9 +357,9 @@ def upsert_perturbation_daily(
                 """
                 INSERT INTO perturbation_daily (
                   time, symbol, asset_class, epsilon, magnitude, regime_valid,
-                  z_return, z_volume, z_rel_strength, price, computed_at
+                  z_return, z_volume, z_rel_strength, price, z_trend, computed_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (time, symbol) DO UPDATE SET
                   asset_class = EXCLUDED.asset_class,
                   epsilon = EXCLUDED.epsilon,
@@ -307,6 +369,7 @@ def upsert_perturbation_daily(
                   z_volume = EXCLUDED.z_volume,
                   z_rel_strength = EXCLUDED.z_rel_strength,
                   price = EXCLUDED.price,
+                  z_trend = EXCLUDED.z_trend,
                   computed_at = NOW()
                 """,
                 rows,

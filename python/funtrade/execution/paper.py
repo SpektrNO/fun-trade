@@ -305,6 +305,25 @@ def execute_trade(
     )
 
 
+def get_position_quantities(
+    settings: Settings | None = None,
+) -> dict[str, float]:
+    """Net shares per symbol — lightweight lookup for recommendations (no mark prices)."""
+    settings = settings or Settings.from_env()
+    with get_connection(settings) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT symbol, net_qty_shares
+                FROM paper_positions
+                WHERE ABS(net_qty_shares) > 1e-12
+                ORDER BY symbol
+                """
+            )
+            rows = cur.fetchall()
+    return {str(symbol): float(qty) for symbol, qty in rows}
+
+
 def get_portfolio_summary(
     settings: Settings | None = None,
     paper: PaperSettings | None = None,

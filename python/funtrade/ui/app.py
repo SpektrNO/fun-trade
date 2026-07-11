@@ -681,8 +681,9 @@ with tab_recommendations:
         )
     else:
         st.caption(
-            "Traditional **moving-average crossover** with momentum filter (`config.json` → `momentum_benchmark`). "
-            "Buy when fast MA > slow MA (and momentum confirms); sell on crossunder when long."
+            "Dual **MA crossover** benchmark: **buy** when fast MA > slow MA and 63-day momentum is positive; "
+            "**sell** on crossunder when long. “Fast > slow” is **not** price vs MA — price can sit above both in a rally. "
+            "Settings: `config.json` → `momentum_benchmark`."
         )
     assume_holding_all = st.toggle(
         "Assume I hold every symbol",
@@ -742,7 +743,7 @@ with tab_recommendations:
                     "fast_ma": "Fast MA",
                     "slow_ma": "Slow MA",
                     "momentum_pct": "Momentum %",
-                    "ma_bullish": "MA bullish",
+                    "ma_bullish": "Fast > slow",
                     "position_label": "Position",
                     "action": "Action",
                     "note": "Note",
@@ -757,7 +758,7 @@ with tab_recommendations:
             else:
                 show_cols = [
                     c for c in show_cols
-                    if c not in ("Fast MA", "Slow MA", "Momentum %", "MA bullish")
+                    if c not in ("Fast MA", "Slow MA", "Momentum %", "Fast > slow")
                 ]
             table = display[show_cols]
             st.dataframe(
@@ -772,7 +773,7 @@ with tab_recommendations:
                     "Fast MA": st.column_config.NumberColumn(format="%.2f"),
                     "Slow MA": st.column_config.NumberColumn(format="%.2f"),
                     "Momentum %": st.column_config.NumberColumn(format="%.1f"),
-                    "MA bullish": st.column_config.CheckboxColumn(),
+                    "Fast > slow": st.column_config.CheckboxColumn(),
                 },
             )
             if rec.attrs.get("assume_holding_all"):

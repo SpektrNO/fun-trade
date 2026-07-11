@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from funtrade.config import Settings
-from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars
+from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars, load_price_bars_batch
 from funtrade.universe_config import MomentumBenchmarkConfig
 
 
@@ -25,6 +25,23 @@ class MomentumResult:
 
 def _min_periods(window: int) -> int:
     return max(5, window // 4)
+
+
+def momentum_frame_from_prices(price: pd.Series, config: MomentumBenchmarkConfig) -> pd.DataFrame:
+    """MA/momentum features from a price series (used by backtest and batch recommendations)."""
+    fast = price.rolling(config.fast_ma_days, min_periods=_min_periods(config.fast_ma_days)).mean()
+    slow = price.rolling(config.slow_ma_days, min_periods=_min_periods(config.slow_ma_days)).mean()
+    mom = price / price.shift(config.momentum_lookback_days) - 1.0
+    return pd.DataFrame(
+        {
+            "price": price,
+            "fast_ma": fast,
+            "slow_ma": slow,
+            "momentum": mom,
+            "ma_bullish": fast > slow,
+        },
+        index=price.index,
+    ).dropna(how="all")
 
 
 def compute_momentum_series(
@@ -49,21 +66,31 @@ def compute_momentum_series(
         df = df.tail(max_bars)
 
     price = df["price"].astype(float)
-    fast = price.rolling(config.fast_ma_days, min_periods=_min_periods(config.fast_ma_days)).mean()
-    slow = price.rolling(config.slow_ma_days, min_periods=_min_periods(config.slow_ma_days)).mean()
-    mom = price / price.shift(config.momentum_lookback_days) - 1.0
+    return momentum_frame_from_prices(price, config)
 
-    out = pd.DataFrame(
-        {
-            "price": price,
-            "fast_ma": fast,
-            "slow_ma": slow,
-            "momentum": mom,
-            "ma_bullish": fast > slow,
-        },
-        index=price.index,
+
+def _snapshot_from_series(
+    series: pd.DataFrame,
+    *,
+    symbol: str,
+    asset_class: str,
+) -> MomentumResult | None:
+    if series.empty:
+        return None
+    latest = series.iloc[-1]
+    if pd.isna(latest.get("fast_ma")) or pd.isna(latest.get("slow_ma")):
+        return None
+    ts = series.index[-1]
+    return MomentumResult(
+        time=ts,
+        symbol=symbol,
+        asset_class=asset_class,
+        price=float(latest["price"]),
+        fast_ma=float(latest["fast_ma"]),
+        slow_ma=float(latest["slow_ma"]),
+        momentum=float(latest["momentum"]) if not pd.isna(latest["momentum"]) else float("nan"),
+        ma_bullish=bool(latest["ma_bullish"]),
     )
-    return out.dropna(how="all")
 
 
 def signal_from_momentum(
@@ -98,37 +125,33 @@ def detect_latest_momentum(
     *,
     settings: Settings | None = None,
 ) -> list[MomentumResult]:
-    """Latest-bar momentum snapshot for each symbol (recommendations)."""
+    """Latest-bar momentum snapshot for each symbol (one batched price query)."""
     settings = settings or Settings.from_env()
     if settings.universe is None:
         return []
     config = settings.universe.momentum_benchmark
     symbols = symbols or settings.watchlist
+    if not symbols:
+        return []
+
+    tail = max(config.slow_ma_days, config.momentum_lookback_days) + 60
+    bars_by_symbol = load_price_bars_batch(symbols, tail_bars=tail, settings=settings)
     results: list[MomentumResult] = []
 
     for symbol in symbols:
         try:
             sym_settings = settings.for_symbol(symbol)
-            tail = max(config.slow_ma_days, config.momentum_lookback_days) + 60
-            series = compute_momentum_series(
-                symbol, settings=sym_settings, config=config, max_bars=tail,
-            )
-            if series.empty:
+            df = bars_by_symbol.get(symbol)
+            if df is None or df.empty:
                 continue
-            latest = series.iloc[-1]
-            ts = series.index[-1]
-            results.append(
-                MomentumResult(
-                    time=ts,
-                    symbol=symbol,
-                    asset_class=sym_settings.asset_class or "etf",
-                    price=float(latest["price"]),
-                    fast_ma=float(latest["fast_ma"]),
-                    slow_ma=float(latest["slow_ma"]),
-                    momentum=float(latest["momentum"]) if not pd.isna(latest["momentum"]) else float("nan"),
-                    ma_bullish=bool(latest["ma_bullish"]),
-                )
+            series = momentum_frame_from_prices(df["price"].astype(float), config)
+            snap = _snapshot_from_series(
+                series,
+                symbol=symbol,
+                asset_class=sym_settings.asset_class or "etf",
             )
+            if snap is not None:
+                results.append(snap)
         except Exception:
             continue
 

@@ -25,13 +25,12 @@ from funtrade.data.loader import (
     load_latest_perturbation_snapshots,
     load_price_bars,
 )
-from funtrade.execution.paper import PaperSettings, get_portfolio_summary
+from funtrade.execution.paper import PaperSettings, get_portfolio_summary, get_position_quantities
 from funtrade.models.momentum import (
     detect_latest_momentum,
     signal_from_momentum,
 )
 from funtrade.models.perturbation import (
-    compute_latest_z_trend,
     compute_perturbation_series,
     detect_latest_perturbations,
     signal_from_epsilon,
@@ -219,27 +218,15 @@ def _fetch_perturbation_recommendations(
         return pd.DataFrame()
 
     snapshots = load_latest_perturbation_snapshots(symbols, settings=base)
-    need_z_trend = base.trend_enable and any(
-        settings_for_symbol(params, s).trend_gate_sells for s in symbols
-    )
-    z_trend_by_symbol: dict[str, float] = {}
-    if need_z_trend:
-        for symbol in symbols:
-            if symbol not in snapshots:
-                continue
-            sym_settings = settings_for_symbol(params, symbol)
-            if sym_settings.trend_gate_sells and sym_settings.trend_enable:
-                z_trend_by_symbol[symbol] = compute_latest_z_trend(symbol, settings=sym_settings)
-
-    summary = get_portfolio_summary(settings=base, paper=params.to_paper_settings())
-    positions = {pos["symbol"]: float(pos["net_qty_shares"]) for pos in summary.get("positions", [])}
+    sym_settings_by_symbol = {s: settings_for_symbol(params, s) for s in symbols}
+    positions = get_position_quantities(settings=base)
     assumed_eur = params.to_paper_settings().slice_notional_eur()
 
     rows: list[dict] = []
     errors: list[str] = []
     latest_detect: pd.Timestamp | None = None
     for symbol in symbols:
-        sym_settings = settings_for_symbol(params, symbol)
+        sym_settings = sym_settings_by_symbol[symbol]
         p = snapshots.get(symbol)
         paper_qty = positions.get(symbol, 0.0)
         if p is None:
@@ -270,7 +257,7 @@ def _fetch_perturbation_recommendations(
         price = float(p.price or 0.0)
         assumed_qty = assumed_eur / price if price > 0 else assumed_eur / 100.0
         pos_qty = paper_qty if paper_qty > 0 else (assumed_qty if assume_holding_all else 0.0)
-        z_trend = z_trend_by_symbol.get(symbol, 0.0)
+        z_trend = float(p.z_trend) if p.z_trend is not None else 0.0
         threshold = sym_settings.epsilon_threshold
         sig = signal_from_epsilon(
             p.epsilon,
@@ -332,8 +319,7 @@ def _fetch_momentum_recommendations(
     snapshots = detect_latest_momentum(symbols=symbols, settings=base)
     by_symbol = {p.symbol: p for p in snapshots}
 
-    summary = get_portfolio_summary(settings=base, paper=params.to_paper_settings())
-    positions = {pos["symbol"]: float(pos["net_qty_shares"]) for pos in summary.get("positions", [])}
+    positions = get_position_quantities(settings=base)
     assumed_eur = params.to_paper_settings().slice_notional_eur()
 
     rows: list[dict] = []
@@ -390,6 +376,9 @@ def _fetch_momentum_recommendations(
                 "action": _signal_action(sig),
                 "note": _momentum_recommendation_note(
                     signal=sig,
+                    price=price,
+                    fast_ma=p.fast_ma,
+                    slow_ma=p.slow_ma,
                     ma_bullish=p.ma_bullish,
                     momentum=p.momentum,
                     config=config,
@@ -409,21 +398,28 @@ def _fetch_momentum_recommendations(
 def _momentum_recommendation_note(
     *,
     signal: int,
+    price: float,
+    fast_ma: float,
+    slow_ma: float,
     ma_bullish: bool,
     momentum: float,
     config,
     position_shares: float,
 ) -> str:
+    mom_pct = f"{momentum * 100:.1f}%" if not pd.isna(momentum) else "n/a"
     if signal > 0:
-        return "MA bullish + momentum confirm"
+        return (
+            f"Fast MA ({fast_ma:.2f}) > slow MA ({slow_ma:.2f}); "
+            f"63d momentum {mom_pct} (price {price:.2f})"
+        )
     if signal < 0:
-        return "MA bearish — exit long"
+        return f"Fast MA ({fast_ma:.2f}) < slow MA ({slow_ma:.2f}) — exit long"
     if ma_bullish and config.require_momentum_for_buy:
         if pd.isna(momentum) or momentum < config.momentum_threshold:
-            return "MA bullish, weak momentum"
-        return "Already long"
+            return f"Fast > slow, but 63d momentum {mom_pct} below threshold"
+        return "Fast > slow; already long"
     if not ma_bullish and position_shares <= 0:
-        return "MA bearish, flat"
+        return f"Fast MA ({fast_ma:.2f}) ≤ slow MA ({slow_ma:.2f}); flat"
     return "Hold"
 
 
