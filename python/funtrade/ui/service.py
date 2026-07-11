@@ -42,7 +42,7 @@ class UiParams:
     w_volume: float
     w_rel_strength: float
     paper_initial_cash: float
-    paper_trade_shares: float
+    paper_trade_slice_pct: float
     paper_fee_bps: float
     paper_position_limit_shares: float
     h0_weight_oil: float
@@ -78,7 +78,7 @@ class UiParams:
             initial_cash=self.paper_initial_cash,
             position_limit_shares=self.paper_position_limit_shares,
             fee_bps=self.paper_fee_bps,
-            trade_shares=self.paper_trade_shares,
+            trade_slice_pct=self.paper_trade_slice_pct,
             csv_path=base.csv_path,
         )
 
@@ -155,7 +155,7 @@ def fetch_recommendations(
 
     summary = get_portfolio_summary(settings=base, paper=params.to_paper_settings())
     positions = {pos["symbol"]: float(pos["net_qty_shares"]) for pos in summary.get("positions", [])}
-    assumed_qty = float(params.paper_trade_shares) if params.paper_trade_shares > 0 else 1.0
+    assumed_eur = params.to_paper_settings().slice_notional_eur()
 
     rows: list[dict] = []
     errors: list[str] = []
@@ -185,6 +185,8 @@ def fetch_recommendations(
             continue
 
         pos_assumed = assume_holding_all and paper_qty <= 0
+        price = float(p.inputs.get("price", 0.0))
+        assumed_qty = assumed_eur / price if price > 0 else assumed_eur / 100.0
         pos_qty = paper_qty if paper_qty > 0 else (assumed_qty if assume_holding_all else 0.0)
         z_trend = float(p.inputs.get("z_trend", 0.0))
         threshold = sym_settings.epsilon_threshold
@@ -243,7 +245,7 @@ def default_ui_params(symbol: str = "VWCE.DE") -> UiParams:
         w_volume=sym.w_volume,
         w_rel_strength=sym.w_rel_strength,
         paper_initial_cash=p.initial_cash,
-        paper_trade_shares=p.trade_shares,
+        paper_trade_slice_pct=p.trade_slice_pct,
         paper_fee_bps=p.fee_bps,
         paper_position_limit_shares=p.position_limit_shares,
         h0_weight_oil=base.h0_weight_oil,

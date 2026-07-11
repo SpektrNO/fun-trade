@@ -181,10 +181,10 @@ Not in the UI sidebar; affects Wallet tab, paper runner, and backtest capital.
 
 | Parameter | Effect |
 |-----------|--------|
-| **`PAPER_INITIAL_CASH_EUR`** | Starting cash |
-| **`PAPER_TRADE_SHARES`** | Shares per signal; also used for “assumed holding” qty on Recommendations |
+| **`PAPER_INITIAL_CASH_EUR`** | Starting cash (also caps each trade slice) |
+| **`PAPER_TRADE_SLICE_PCT`** | Fraction of initial cash per buy/sell tranche (default `0.10` = 10% → €10k on €100k); fractional shares |
 | **`PAPER_FEE_BPS`** / **`BACKTEST_FEE_BPS`** | Transaction cost per trade |
-| **`PAPER_POSITION_LIMIT_SHARES`** | Max position size |
+| **`PAPER_POSITION_LIMIT_SHARES`** | Max position size per symbol |
 | **`BACKTEST_INITIAL_CASH_EUR`** | Backtest starting capital (defaults to paper size) |
 
 ---

@@ -52,6 +52,7 @@ def run_paper_once(
             p.symbol,
             price,
             epsilon=p.epsilon,
+            epsilon_threshold=sym_settings.epsilon_threshold,
             regime_valid=p.regime_valid,
             paper=paper,
             settings=settings,

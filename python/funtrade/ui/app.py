@@ -37,6 +37,20 @@ from funtrade.ui.service import (
 # Streamlit then serves HTML at that path and relative ./static/ assets break → blank page.
 st.set_page_config(page_title="FunTrade Console", layout="wide")
 
+_REC_BUY_ROW = "background-color: #dcfce7; color: #166534"
+_REC_SELL_ROW = "background-color: #ffedd5; color: #c2410c"
+
+
+def _recommendation_row_styles(row: pd.Series) -> list[str]:
+    action = row.get("Action")
+    if action == "BUY":
+        css = _REC_BUY_ROW
+    elif action == "SELL":
+        css = _REC_SELL_ROW
+    else:
+        return [""] * len(row)
+    return [css] * len(row)
+
 settings = Settings.from_env()
 chart_renderer = get_chart_renderer(settings=settings)
 if "params" not in st.session_state:
@@ -55,6 +69,9 @@ if not hasattr(params, "h0_weight_oil"):
     )
 if not hasattr(params, "h0_source"):
     _migrate.update(h0_source=H0_SOURCE_SAVED, epsilon_chart_window=CHART_WINDOW_RECENT)
+if not hasattr(params, "paper_trade_slice_pct"):
+    _p = default_ui_params(params.symbol)
+    _migrate.update(paper_trade_slice_pct=_p.paper_trade_slice_pct)
 if _migrate:
     params = replace(params, **_migrate)
     st.session_state.params = params
@@ -76,7 +93,7 @@ if _chosen != params.symbol:
     params = replace(
         params,
         paper_initial_cash=_prev.paper_initial_cash,
-        paper_trade_shares=_prev.paper_trade_shares,
+        paper_trade_slice_pct=_prev.paper_trade_slice_pct,
         paper_fee_bps=_prev.paper_fee_bps,
         paper_position_limit_shares=_prev.paper_position_limit_shares,
         h0_weight_oil=_prev.h0_weight_oil,
@@ -413,7 +430,9 @@ with tab_trade:
             if price and sig != 0:
                 fill = execute_trade(
                     sig, p.symbol, price,
-                    epsilon=p.epsilon, regime_valid=p.regime_valid,
+                    epsilon=p.epsilon,
+                    epsilon_threshold=params.epsilon_threshold,
+                    regime_valid=p.regime_valid,
                     paper=params.to_paper_settings(), settings=params.to_settings(),
                 )
                 if fill:
@@ -433,7 +452,7 @@ with tab_recommendations:
         "Assume I hold every symbol",
         value=bool(st.session_state.get("rec_assume_holding_all", False)),
         help="Treat each watchlist symbol as a long position (for your DNB portfolio). "
-        "Enables SELL / trend-gate notes when ε is high; uses paper trade size when flat.",
+        "Enables SELL / trend-gate notes when ε is high; uses one trade slice when flat.",
     )
     prev_assume = st.session_state.get("rec_assume_holding_all", False)
     if assume_holding_all != prev_assume:
@@ -490,8 +509,9 @@ with tab_recommendations:
                 }
             )
             show_cols = [c for c in display.columns if c not in ("signal", "position_shares", "position_assumed")]
+            table = display[show_cols]
             st.dataframe(
-                display[show_cols],
+                table.style.apply(_recommendation_row_styles, axis=1),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
@@ -502,7 +522,7 @@ with tab_recommendations:
                 },
             )
             if rec.attrs.get("assume_holding_all"):
-                st.caption("*Assumed holding (not in paper wallet). Qty = sidebar paper trade size.")
+                st.caption("*Assumed holding (not in paper wallet). Qty ≈ one trade slice (PAPER_TRADE_SLICE_PCT).")
             errors = rec.attrs.get("errors", [])
             if errors:
                 st.warning(f"No model output for: {', '.join(errors)} — run `make ingest` and `make calibrate-all`.")

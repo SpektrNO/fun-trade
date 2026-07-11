@@ -91,7 +91,7 @@ Pair FunTrade with a **strategic core** (DCA, target weights). Use it as a **tac
 
 ```bash
 # 1. Config
-cp .env.example .env && cp config.json.example config.json   # edit config.json watchlists
+cp .env.example .env && cp config.json.example config.json   # edit config.json watchlists (local, gitignored)
 
 # 2. Infrastructure
 make setup                    # install Python deps
@@ -180,7 +180,7 @@ make calibrate-all       # H₀ for every symbol in WATCHLIST
 make ui                  # optional → http://localhost:8501
 ```
 
-Check `.env` for `DATABASE_URL` and `PAPER_*` wallet settings. Trading thresholds and watchlists are in **`config.json`**.
+Check `.env` for `DATABASE_URL` and **`PAPER_*`** wallet settings (`PAPER_INITIAL_CASH_EUR`, `PAPER_TRADE_SLICE_PCT`, fees). Trading thresholds and watchlists are in **`config.json`** (your copy stays local — not committed to git).
 
 ### Daily refresh (before acting)
 
@@ -200,7 +200,16 @@ make paper                            # act: simulate fills for all symbols
 
 Override refresh window: `make refresh REFRESH_DAYS=30`
 
-Or use the **Streamlit UI** (`make ui`): sidebar **Run refresh** (= `make refresh`), **Trade** tab for ε and a paper cycle; **Wallet** tab for cash, positions, and PnL.
+Or use the **Streamlit UI** (`make ui`):
+
+| Tab | Purpose |
+|-----|---------|
+| **Wallet** | Cash, positions, PnL, recent fills, reset portfolio |
+| **Backtest** | Walk-forward test vs buy-and-hold for the selected symbol |
+| **Trade** | ε chart, regime, run one paper cycle for the selected symbol |
+| **Recommendations** | All watchlist symbols — BUY (green) / SELL (orange) / HOLD; Nordnet-style manual overlay |
+
+Sidebar **Run refresh** runs the same pipeline as `make refresh` (ingest → factors → detect → paper).
 
 ### What “act on a suggestion” means
 
@@ -212,7 +221,7 @@ The model outputs **ε** and a **signal**, not a free-text recommendation:
 | **Sell (−1)** | ε > +threshold and you **hold shares** (exit even when regime invalid) |
 | **Hold (0)** | \|ε\| ≤ threshold, regime invalid, or sell while flat |
 
-`make paper` and the UI **execute** only when signal ≠ 0 and limits allow (cash, position cap, fees). No trade after `make detect` usually means ε is **inside the band** — normal, not a broken pipeline.
+`make paper` and the UI **execute** only when signal ≠ 0, **`regime_valid`** (for fills), and limits allow — **cash on hand**, position cap, fees. Buys use **fractional shares** sized from a EUR slice (see [Paper wallet](#paper-wallet) below). No trade after `make detect` usually means ε is **inside the band** — normal, not a broken pipeline.
 
 ### `make live` vs scheduled updates
 
@@ -239,9 +248,30 @@ make ingest && make ingest-factors && make calibrate-all
 
 ### Suggested workflow
 
-1. **Refresh** — ingest recent days → detect → paper (or UI Trade tab).
-2. **Review** — Wallet tab or `make paper` JSON (`signal`, `fill`).
-3. **Research** — Backtest tab to sanity-check threshold before trusting paper signals.
+1. **Refresh** — ingest recent days → detect → paper (CLI or UI **Run refresh**).
+2. **Review** — **Recommendations** tab for the full watchlist, or **Wallet** / `make paper` JSON (`signal`, `fill`).
+3. **Research** — **Backtest** tab to sanity-check threshold before trusting paper signals.
+
+### Paper wallet
+
+Forward paper (`make paper`, UI refresh, Trade tab) simulates a **virtual EUR wallet** in TimescaleDB (plus an optional CSV export at `data/paper_trades.csv`).
+
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `PAPER_INITIAL_CASH_EUR` | 100000 | Starting cash |
+| `PAPER_TRADE_SLICE_PCT` | 0.10 | Max **10% of starting cash** per buy/sell tranche (€10k on a €100k wallet) |
+| `PAPER_FEE_BPS` | 5 | Fee per fill |
+| `PAPER_POSITION_LIMIT_SHARES` | 1000 | Max shares per symbol |
+
+**Sizing rules:**
+
+- Each tranche is a **EUR amount** → **fractional shares** (`slice ÷ price`), not a fixed share count.
+- Slice is based on **starting** wallet size (`PAPER_INITIAL_CASH_EUR`), not current NAV.
+- **Buys** are capped by **cash still available** — no negative cash.
+- **Sells** exit incrementally (one slice per signal), not all-at-once.
+- When |ε| is still extreme, slice scales down (smaller steps until mean-reversion target is nearer).
+
+Reset: UI → **Wallet** → Reset paper portfolio. `make clean` removes the CSV only; DB state needs the UI reset.
 
 ## Default universe
 
@@ -255,7 +285,7 @@ make ingest && make ingest-factors && make calibrate-all
 | `AGGH.DE` | Global aggregate bonds (yfinance: `EUNA.DE`) |
 | `IBCI.DE` | Euro gov bonds (rates proxy) |
 
-Configure in **`config.json`** (copy from `config.json.example` on first setup):
+Configure in **`config.json`** (`make setup` copies `config.json.example` on first run; your file is **gitignored** so watchlists stay local):
 
 - **`benchmark`** / **`currency`** — global universe defaults  
 - **`etf`**, **`mutual_fund`**, **`share`** — separate symbol lists and trading params (`epsilon_threshold`, regime gates, H₁ weights, trend dampening, **`h0_calibration_days`**)  
@@ -266,7 +296,7 @@ Configure in **`config.json`** (copy from `config.json.example` on first setup):
 Example mutual-fund vs ETF difference: `mutual_fund.min_daily_volume_eur: 0` skips the liquidity gate; `mutual_fund.h0_calibration_days: 730` uses a longer NAV history for H₀ than ETFs (`504`).
 
 ```bash
-make setup    # creates config.json from config.json.example
+make setup    # creates local .env + config.json from examples (config.json is gitignored)
 ```
 
 ### Symbol aliases (ISIN / friendly names)
@@ -337,14 +367,17 @@ make ngrok-check          # validate config
 
 Installed via `uv sync` in `python/`:
 
-- `funtrade-ingest`, `funtrade-ingest-factors`, `funtrade-symbols`
-- `funtrade-calibrate`, `funtrade-detect`
-- `funtrade-backtest`, `funtrade-paper`
+- `funtrade-ingest` (`--symbol`, `--symbols`, `--days`)
+- `funtrade-ingest-factors` (global macro panel, not per-symbol)
+- `funtrade-symbols`, `funtrade-calibrate`, `funtrade-detect`
+- `funtrade-backtest`, `funtrade-paper` (`--symbol`)
 - `funtrade-ui`, `funtrade-reconcile`, `funtrade-jacobian`
 
 ## Paper mode vs live trading
 
-**Paper mode** (default) writes simulated fills to TimescaleDB — no real orders. Forward paper (`make paper`) runs detect + signal logic on the **latest bar** and simulates one trading cycle.
+**Paper mode** (default) writes simulated fills to TimescaleDB — no real orders. Forward paper (`make paper`) runs detect + signal logic on the **latest bar** and simulates one trading cycle per watchlist symbol (or `SYMBOL=…` for one).
+
+See [Paper wallet](#paper-wallet) for slice sizing and cash rules.
 
 **`make live`** fetches real historical data once; it is not a live feed or broker connection.
 

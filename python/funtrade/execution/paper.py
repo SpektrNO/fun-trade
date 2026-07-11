@@ -22,12 +22,15 @@ class PaperFill:
     cash_after: float
 
 
+MIN_TRADE_EUR = 1.0
+
+
 @dataclass
 class PaperSettings:
     initial_cash: float
     position_limit_shares: float
     fee_bps: float
-    trade_shares: float
+    trade_slice_pct: float
     csv_path: Path
 
     @classmethod
@@ -36,9 +39,73 @@ class PaperSettings:
             initial_cash=float(os.getenv("PAPER_INITIAL_CASH_EUR", "100000")),
             position_limit_shares=float(os.getenv("PAPER_POSITION_LIMIT_SHARES", "1000")),
             fee_bps=float(os.getenv("PAPER_FEE_BPS", "5")),
-            trade_shares=float(os.getenv("PAPER_TRADE_SHARES", "10")),
+            trade_slice_pct=float(os.getenv("PAPER_TRADE_SLICE_PCT", "0.10")),
             csv_path=Path(os.getenv("PAPER_CSV_PATH", "data/paper_trades.csv")),
         )
+
+    def slice_notional_eur(self) -> float:
+        """Max EUR per tranche from start wallet (initial_cash), not current NAV."""
+        return self.initial_cash * self.trade_slice_pct
+
+
+def _fee_rate(fee_bps: float) -> float:
+    return fee_bps / 10000.0
+
+
+def _deviation_scale(epsilon: float | None, threshold: float | None) -> float:
+    """Smaller slices when |ε| is extreme — mean-reversion target not reached yet."""
+    if epsilon is None or threshold is None or threshold <= 0:
+        return 1.0
+    if abs(epsilon) <= threshold:
+        return 1.0
+    return min(1.0, threshold / abs(epsilon))
+
+
+def compute_trade_qty(
+    *,
+    side: str,
+    price: float,
+    cash_eur: float,
+    net_qty: float,
+    paper: PaperSettings,
+    epsilon: float | None = None,
+    epsilon_threshold: float | None = None,
+    qty_shares: float | None = None,
+) -> float:
+    """Fractional shares from a EUR slice (based on start wallet size).
+
+    Buy slice = min(10% of initial cash, cash still available).
+    Sell slice = 10% of initial cash in shares (partial exit), capped by position.
+    """
+    if price <= 0:
+        return 0.0
+
+    if qty_shares is not None:
+        qty = qty_shares
+        if side == "sell":
+            qty = min(qty, net_qty)
+        return max(qty, 0.0)
+
+    scale = _deviation_scale(epsilon, epsilon_threshold)
+    slice_eur = paper.slice_notional_eur() * scale
+
+    if side == "buy":
+        if cash_eur <= 0:
+            return 0.0
+        fee_mult = 1.0 + _fee_rate(paper.fee_bps)
+        max_spend = min(slice_eur, cash_eur / fee_mult)
+        if max_spend < MIN_TRADE_EUR:
+            return 0.0
+        qty = max_spend / price
+        room = paper.position_limit_shares - net_qty
+        if room <= 0:
+            return 0.0
+        return min(qty, room)
+
+    if net_qty <= 0:
+        return 0.0
+    slice_qty = slice_eur / price
+    return min(slice_qty, net_qty)
 
 
 def _position_after_trade(
@@ -111,6 +178,7 @@ def execute_trade(
     price: float,
     *,
     epsilon: float | None = None,
+    epsilon_threshold: float | None = None,
     regime_valid: bool = True,
     qty_shares: float | None = None,
     paper: PaperSettings | None = None,
@@ -121,15 +189,16 @@ def execute_trade(
 
     paper = paper or PaperSettings.from_env()
     settings = settings or Settings.from_env()
-    qty = qty_shares if qty_shares is not None else paper.trade_shares
     side = "buy" if signal > 0 else "sell"
-    notional = price * qty
-    fee = notional * (paper.fee_bps / 10000.0)
     now = datetime.now(UTC)
 
     with get_connection(settings) as conn:
         with conn.cursor() as cur:
             _ensure_portfolio(cur, paper)
+
+            cur.execute("SELECT cash_eur FROM paper_portfolio WHERE id = 1")
+            cash_row = cur.fetchone()
+            cash_eur = float(cash_row[0]) if cash_row else 0.0
 
             cur.execute(
                 "SELECT net_qty_shares, avg_price FROM paper_positions WHERE symbol = %s",
@@ -142,14 +211,31 @@ def execute_trade(
             if signal < 0 and net_qty <= 0:
                 return None
 
-            if signal < 0:
-                qty = min(qty, net_qty)
+            qty = compute_trade_qty(
+                side=side,
+                price=price,
+                cash_eur=cash_eur,
+                net_qty=net_qty,
+                paper=paper,
+                epsilon=epsilon,
+                epsilon_threshold=epsilon_threshold,
+                qty_shares=qty_shares,
+            )
+            if qty <= 0:
+                return None
+
+            notional = price * qty
+            fee = notional * _fee_rate(paper.fee_bps)
+            if side == "buy" and notional + fee > cash_eur + 1e-9:
+                return None
+            if notional < MIN_TRADE_EUR:
+                return None
 
             new_qty, new_avg, realized_delta = _position_after_trade(
                 net_qty, avg_price, side, qty, price
             )
 
-            if new_qty > paper.position_limit_shares:
+            if new_qty > paper.position_limit_shares + 1e-9:
                 return None
 
             cur.execute(
