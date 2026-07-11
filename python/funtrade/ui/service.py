@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, replace
 
 import pandas as pd
@@ -14,6 +15,8 @@ from funtrade.backtest.engine import (
     run_backtest,
 )
 from funtrade.config import Settings
+from funtrade.data.factors import ingest_macro_factors
+from funtrade.data.ingest import ingest_watchlist
 from funtrade.data.loader import MARKET_ADJ_CLOSE, load_latest_equilibrium_params, load_price_bars
 from funtrade.execution.paper import PaperSettings, get_portfolio_summary
 from funtrade.models.perturbation import (
@@ -22,9 +25,11 @@ from funtrade.models.perturbation import (
     signal_from_epsilon,
     trend_signal_kwargs,
 )
+from funtrade.paper.runner import run_paper_once
 
 CHART_WINDOW_RECENT = "recent_120"
 CHART_WINDOW_BACKTEST_TEST = "backtest_test"
+DEFAULT_REFRESH_DAYS = int(os.getenv("REFRESH_DAYS", "14"))
 
 
 @dataclass
@@ -472,3 +477,74 @@ def run_backtest_for_ui(params: UiParams) -> dict:
             {"time": result.price.index, "price": result.price.values}
         ),
     }
+
+
+def run_refresh(
+    *,
+    days: int = DEFAULT_REFRESH_DAYS,
+    settings: Settings | None = None,
+    paper: PaperSettings | None = None,
+) -> dict:
+    """Same pipeline as `make refresh`: ingest → factors → detect → paper."""
+    settings = settings or Settings.from_env()
+    paper = paper or PaperSettings.from_env()
+    out: dict = {"days": days, "steps": {}}
+
+    try:
+        ingest_counts = ingest_watchlist(days=days, settings=settings)
+        out["steps"]["ingest"] = {
+            "ok": True,
+            "rows_upserted": ingest_counts,
+            "total_rows": int(sum(ingest_counts.values())),
+        }
+    except Exception as exc:
+        out["steps"]["ingest"] = {"ok": False, "error": str(exc)}
+        out["ok"] = False
+        return out
+
+    try:
+        factor_counts = ingest_macro_factors(days=days, settings=settings)
+        out["steps"]["ingest_factors"] = {
+            "ok": True,
+            "counts": factor_counts,
+            "total_rows": int(sum(factor_counts.values())),
+        }
+    except Exception as exc:
+        out["steps"]["ingest_factors"] = {"ok": False, "error": str(exc)}
+        out["ok"] = False
+        return out
+
+    try:
+        detections = detect_latest_perturbations(settings=settings, persist=True)
+        out["steps"]["detect"] = {
+            "ok": True,
+            "symbols": len(detections),
+            "results": [
+                {
+                    "symbol": r.symbol,
+                    "epsilon": round(r.epsilon, 3),
+                    "regime_valid": r.regime_valid,
+                }
+                for r in detections
+            ],
+        }
+    except Exception as exc:
+        out["steps"]["detect"] = {"ok": False, "error": str(exc)}
+        out["ok"] = False
+        return out
+
+    try:
+        paper_results = run_paper_once(settings=settings, paper=paper)
+        fills = sum(1 for r in paper_results if r.get("fill") is not None)
+        out["steps"]["paper"] = {
+            "ok": True,
+            "symbols": len(paper_results),
+            "fills": fills,
+            "results": paper_results,
+        }
+        out["ok"] = True
+    except Exception as exc:
+        out["steps"]["paper"] = {"ok": False, "error": str(exc)}
+        out["ok"] = False
+
+    return out

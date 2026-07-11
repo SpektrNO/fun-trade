@@ -27,8 +27,10 @@ from funtrade.ui.service import (
     fetch_recommendations,
     perturbation_context,
     run_backtest_for_ui,
+    run_refresh,
     slice_perturbation_for_chart,
     watchlist_with_class,
+    DEFAULT_REFRESH_DAYS,
 )
 
 # Emoji page_icon creates /images/<hash>.png URLs that iOS/link previews open directly;
@@ -167,6 +169,56 @@ params.epsilon_chart_window = st.sidebar.radio(
     index=0 if params.epsilon_chart_window == CHART_WINDOW_RECENT else 1,
     help="Backtest always simulates on the test slice; this controls the Trade chart range.",
 )
+
+st.sidebar.markdown("**Data refresh**")
+_refresh_days = st.sidebar.number_input(
+    "Refresh window (days)",
+    min_value=7,
+    max_value=90,
+    value=int(st.session_state.get("refresh_days", DEFAULT_REFRESH_DAYS)),
+    step=1,
+    help="Matches make refresh REFRESH_DAYS — recent bars and factors to ingest.",
+)
+st.session_state.refresh_days = _refresh_days
+if st.sidebar.button(
+    "Run refresh (ingest → detect → paper)",
+    type="primary",
+    help="Same as `make refresh`. Needs network; may take a few minutes.",
+):
+    with st.spinner(f"Refreshing last {_refresh_days} days…"):
+        try:
+            result = run_refresh(
+                days=_refresh_days,
+                settings=params.to_settings(),
+                paper=params.to_paper_settings(),
+            )
+            st.session_state.refresh_result = result
+            st.session_state.pop("recommendations_df", None)
+        except Exception as exc:
+            st.session_state.refresh_result = {"ok": False, "error": str(exc), "days": _refresh_days}
+    st.rerun()
+
+if "refresh_result" in st.session_state:
+    _rr = st.session_state.refresh_result
+    if _rr.get("error"):
+        st.sidebar.error(f"Refresh failed: {_rr['error']}")
+    elif _rr.get("ok"):
+        _steps = _rr.get("steps", {})
+        _ingest = _steps.get("ingest", {})
+        _detect = _steps.get("detect", {})
+        _paper = _steps.get("paper", {})
+        st.sidebar.success(
+            f"Refresh done ({_rr.get('days', '?')}d): "
+            f"{_ingest.get('total_rows', 0)} price rows, "
+            f"{_detect.get('symbols', 0)} ε updates, "
+            f"{_paper.get('fills', 0)} paper fills."
+        )
+    else:
+        st.sidebar.warning("Refresh incomplete — see step errors below.")
+        for name, step in _rr.get("steps", {}).items():
+            if not step.get("ok"):
+                st.sidebar.caption(f"{name}: {step.get('error', 'failed')}")
+
 st.session_state.params = params
 
 tab_wallet, tab_backtest, tab_trade, tab_recommendations = st.tabs(

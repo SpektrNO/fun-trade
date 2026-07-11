@@ -13,13 +13,73 @@ FunTrade is a **systematic trading assistant**, not a hands-off execution bot. I
 | **Trading assistant / copilot** | Estimates fair value and flags when a fund looks cheap or rich; you decide and place orders (e.g. Nordnet). |
 | **Quant research & backtest platform** | Calibrated H₀ equilibrium, daily ε signals, walk-forward backtests, threshold tuning, Grafana. |
 | **Tactical overlay** | Meant to sit on top of a strategic buy-and-hold core — add on dips, trim on rallies — not to replace DCA or asset allocation. |
-| **Long-only, daily horizon** | Mean-reversion on UCITS daily closes; regime gates and trend dampening; not HFT, momentum, or shorting. |
+| **Long-only, daily horizon** | Mean-reversion on UCITS daily closes; regime gates and optional trend dampening (H₂). Not HFT, not intraday, **no shorting**. |
 
-**Strategy in one line:** slow **equilibrium fair value (H₀)** plus fast **deviation score (ε)** → long-only buy / hold / trim when price is far below or above the model band.
+**Strategy in one line:** slow **equilibrium fair value (H₀)** plus fast **deviation score (ε)** → buy / hold / trim when price is far below or above the model band.
 
-**What it is not:** a robo-advisor, an “AI trading bot” that auto-executes, a real-time feed, or an alpha guarantee. v1 is **research, signals, paper simulation, and observability** first.
+**Long-only** means **no short positions** (you never sell short when flat). It does **not** mean long holding period — signals are **daily tactical**, typically days to weeks when ε crosses the threshold.
 
-Model detail: [docs/component-model.md](docs/component-model.md) · Parameter tuning: [docs/tuning-guide.md](docs/tuning-guide.md)
+### Momentum vs mean-reversion
+
+Two common systematic styles:
+
+| | **Typical “AI trading bot”** | **FunTrade** |
+|---|------------------------------|--------------|
+| **Style** | Trend-following / momentum | Mean-reversion to a modeled fair value |
+| **Signal** | MA cross, RSI, “price went up” | ε = deviation from H₀ band |
+| **Data** | Price (and volume) only | Price + **macro-shifted** equilibrium (rates, credit, FX, sector beta; optional oil/climate) |
+| **Buy when** | Strength / breakout | Cheap vs model (ε < −threshold) |
+| **Sell when** | Weakness / stop | Rich vs model while **holding** (ε > +threshold) |
+| **Delivery** | Broker script, often live-first | Backtest + paper + observability first |
+
+**Momentum** rides strength. **Mean-reversion** fades deviation from fair value. FunTrade is the second.
+
+### How this differs from a script bot
+
+Most LLM-generated “trading bots” are a few hundred lines: golden/death cross, RSI, or similar **price-only** rules with no calibration layer. FunTrade is a different **strategy class** and **pipeline**:
+
+| Typical script bot | FunTrade |
+|--------------------|----------|
+| Fixed MA / indicator rules | Calibrated **H₀** (seasonal OU + macro adjustment) per symbol |
+| Trend-following | **ε** blend → mean-reversion signals |
+| Price history only | H₀ shifts with **macro z-scores** (252-day window) |
+| Ship to broker API | **Prove on data**: ingest → calibrate → detect → backtest → Grafana |
+| Opaque | Tunable weights, stored calibrations, [tuning guide](docs/tuning-guide.md) |
+
+When ε flags a deviation, the system scores **mispricing vs a statistical fair-value band** that incorporates macro factors — not “cheap vs its own 200-day MA” alone. It does **not** claim causal knowledge of *why* the economy moved (earnings, war, etc.); it measures distance from a modeled equilibrium.
+
+### H₀ and ε (perturbation stack)
+
+```mermaid
+flowchart LR
+  subgraph typical["Typical MA bot"]
+    P1[Daily price] --> MA[MA / RSI rules]
+    MA --> MOM[Buy strength / sell weakness]
+  end
+  subgraph funtrade["FunTrade"]
+    P2[Daily price] --> H0[H₀ fair value]
+    M[Macro factors] --> H0
+    H0 --> EPS[ε deviation]
+    P2 --> EPS
+    EPS --> MR[Buy cheap / trim rich]
+  end
+```
+
+- **H₀ (slow anchor)** — log-price seasonality + OU mean μ + macro adjustment (EUR rates proxy, credit spread, EUR/USD, sector beta). Optional oil/climate in `.env`. Fair value band around exp(season + μ + macro_adj).
+- **ε (fast perturbation)** — weighted z-scores: mainly **price vs band** (`z_return`), plus volume, relative strength vs sector ETF, vol spike. Macro mostly moves **H₀**; ε is “how far price has moved from that band today.”
+- **H₂ (optional)** — trend dampening on ε and sell gates in uptrends (`TREND_ENABLE` in `.env`).
+
+Formal component list: [docs/component-model.md](docs/component-model.md). Strategy presets: [docs/tuning-guide.md](docs/tuning-guide.md).
+
+### What it is not
+
+- A robo-advisor or portfolio allocator  
+- An “AI trading bot” that auto-executes on a live broker (v1 is **paper + research**)  
+- A real-time or intraday system (daily bars only)  
+- Shorting or market-neutral (long-only)  
+- A guarantee of alpha — backtest and compare to buy-and-hold yourself  
+
+Pair FunTrade with a **strategic core** (DCA, target weights). Use it as a **tactical overlay**: trim when rich, add when cheap — especially on an existing Nordnet-style portfolio (Recommendations → “Assume I hold every symbol”).
 
 ## Prerequisites
 
@@ -90,20 +150,20 @@ Override defaults: `SYMBOL=VWCE.DE DAYS=730 make ingest` · `REFRESH_DAYS=30 mak
 ```
 price/factor ingest → TimescaleDB
         ↓
-  H₀ calibrate (OU + seasonality + macro adjustment)
+  H₀ calibrate (seasonal OU + macro adjustment → fair value band)
         ↓
-  H₁ detect (ε = weighted z-scores)
+  H₁ detect (ε = weighted deviation z-scores vs H₀)
         ↓
-  backtest / paper wallet / Streamlit UI
+  backtest / paper wallet / Streamlit UI / Grafana
 ```
 
 **H₁ inputs (ε blend):** `z_return` (vs equilibrium), `z_volume`, `z_rel_strength` (vs sector ETF), `z_vol`.
 
-**Trade rule:** long-only mean reversion — buy when ε < −threshold and `regime_valid`; sell to exit when ε > +threshold while holding (exit allowed even if regime invalid).
+**Trade rule (long-only mean-reversion):** buy when ε < −threshold and `regime_valid`; sell to **exit a long** when ε > +threshold while holding (no short when flat).
 
-On daily UCITS data, |ε| on the close is often below 0.6; ETF defaults use **0.75** in `config.json`. Long-only needs **ε < −threshold** to buy first — if backtest shows zero trades, lower ε in the sidebar or in the asset-class block in `config.json`.
+On daily UCITS data, |ε| on the close is often below 0.6; ETF defaults use **0.75** in `config.json`. Long-only needs **ε < −threshold** to buy from cash — if backtest shows zero trades, lower ε in the sidebar or in `config.json`. In steady bull markets, **few buys** is normal; see [tuning-guide.md](docs/tuning-guide.md).
 
-See [fun-trade-plan.md](fun-trade-plan.md) and [docs/component-model.md](docs/component-model.md) for design detail.
+Design detail: [fun-trade-plan.md](fun-trade-plan.md) · [component-model.md](docs/component-model.md)
 
 ## Operating the system (act on signals)
 
@@ -140,7 +200,7 @@ make paper                            # act: simulate fills for all symbols
 
 Override refresh window: `make refresh REFRESH_DAYS=30`
 
-Or use the **Streamlit UI** (`make ui`): **Trade** tab shows ε and runs a paper cycle; **Wallet** tab shows cash, positions, and PnL.
+Or use the **Streamlit UI** (`make ui`): sidebar **Run refresh** (= `make refresh`), **Trade** tab for ε and a paper cycle; **Wallet** tab for cash, positions, and PnL.
 
 ### What “act on a suggestion” means
 
@@ -302,6 +362,7 @@ Provisioned under **Dashboards → FunTrade** (after `make run`):
 |-----------|---------|
 | **Market Data** | Price, volume, ingested symbols, **H₀ oil & climate** (`factor_signals`) |
 | **Perturbation Model** | Daily ε time series (`perturbation_daily`), H₀ calibrations, backtest runs |
+| **Paper Trading** | Portfolio, positions, fills |
 
 The ε chart needs **`make detect`** (or `make refresh`) — each detect upserts the full daily ε history per symbol. The old `perturbation_events` table only stores the latest snapshot per run (one point if you ran detect once).
 
@@ -312,7 +373,6 @@ make migrate
 make detect
 make grafana-reload
 ```
-| **Paper Trading** | Portfolio, positions, fills |
 
 If dashboards are missing (empty Grafana), reload provisioning:
 
