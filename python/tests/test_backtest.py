@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
+import pytest
 
-from funtrade.backtest.engine import _compute_metrics, run_backtest
+from funtrade.backtest.engine import _compute_metrics, buy_and_hold_from_prices, run_backtest
 
 
 def test_compute_metrics_additive_pnl():
@@ -39,7 +40,7 @@ def test_run_backtest_tracks_position(monkeypatch):
 
         def equilibrium_band(self, prices, *, symbol=None, **kwargs):
             p = prices.astype(float)
-            return pd.DataFrame({"residual": np.zeros(len(p))}, index=p.index)
+            return pd.DataFrame({"residual": np.zeros(len(p)), "equilibrium": p.values}, index=p.index)
 
     def fake_series(symbol, **kwargs):
         eps = pd.Series(0.0, index=idx)
@@ -95,7 +96,7 @@ def test_backtest_realized_vs_unrealized(monkeypatch):
 
         def equilibrium_band(self, prices, *, symbol=None, **kwargs):
             p = prices.astype(float)
-            return pd.DataFrame({"residual": np.zeros(len(p))}, index=p.index)
+            return pd.DataFrame({"residual": np.zeros(len(p)), "equilibrium": p.values}, index=p.index)
 
     def fake_series(symbol, **kwargs):
         eps = pd.Series(0.0, index=idx)
@@ -152,7 +153,7 @@ def test_run_backtest_saved_h0_uses_load_or_calibrate(monkeypatch):
 
         def equilibrium_band(self, prices, **kwargs):
             p = prices.astype(float)
-            return pd.DataFrame({"residual": np.zeros(len(p))}, index=p.index)
+            return pd.DataFrame({"residual": np.zeros(len(p)), "equilibrium": p.values}, index=p.index)
 
     def fake_load(symbol, market="adj_close", **kwargs):
         return price_df
@@ -195,3 +196,185 @@ def test_run_backtest_saved_h0_uses_load_or_calibrate(monkeypatch):
     run_backtest("VWCE.DE", h0_source=eng.H0_SOURCE_WALK_FORWARD, persist=False)
     assert load_calls["calibrate"] == 1
     assert load_calls["load"] == 0
+
+
+def test_buy_and_hold_from_prices():
+    prices = pd.Series([100.0, 110.0, 121.0])
+    bh = buy_and_hold_from_prices(prices, 100_000.0)
+    assert bh["profit_eur"] == pytest.approx(21_000.0)
+    assert bh["return_pct"] == pytest.approx(21.0)
+
+
+def test_buy_and_hold_independent_of_strategy_trades(monkeypatch):
+    import funtrade.backtest.engine as eng
+
+    idx = pd.date_range("2024-01-01", periods=200, freq="D", tz="UTC")
+    train_end = idx[139]
+    test_idx = idx[140:]
+    price_df = pd.DataFrame({"price": np.linspace(100.0, 150.0, len(idx)), "volume": 1e6}, index=idx)
+
+    def fake_load(symbol, market="adj_close", **kwargs):
+        return price_df
+
+    class FakeEq:
+        symbol = "VWCE.DE"
+        sigma = 1.0
+        half_life_days = 7.0
+
+        def equilibrium_band(self, prices, *, symbol=None, **kwargs):
+            p = prices.astype(float)
+            return pd.DataFrame({"residual": np.zeros(len(p)), "equilibrium": p.values}, index=p.index)
+
+    def fake_series(symbol, **kwargs):
+        eps = pd.Series(0.0, index=idx)
+        rv = pd.Series(True, index=idx)
+        return pd.DataFrame(
+            {
+                "epsilon": eps,
+                "magnitude": eps.abs(),
+                "z_return": eps,
+                "z_volume": 0.0,
+                "z_rel_strength": 0.0,
+                "z_vol": 0.0,
+                "regime_valid": rv,
+                "price": price_df["price"],
+            },
+            index=idx,
+        )
+
+    monkeypatch.setattr(eng, "load_price_bars", fake_load)
+    monkeypatch.setattr(eng, "calibrate_equilibrium", lambda *a, **k: FakeEq())
+    monkeypatch.setattr(eng, "compute_perturbation_series", fake_series)
+
+    result = run_backtest(
+        "VWCE.DE",
+        train_end=train_end,
+        test_start=test_idx[0],
+        epsilon_threshold=2.0,
+        persist=False,
+    )
+    assert result.total_trades == 0
+    assert result.metrics["net_profit_eur"] == pytest.approx(0.0)
+    assert result.metrics["buy_and_hold_profit_eur"] > 0.0
+
+
+def test_backtest_uses_slice_sizing_by_default(monkeypatch):
+    import funtrade.backtest.engine as eng
+
+    idx = pd.date_range("2024-01-01", periods=200, freq="D", tz="UTC")
+    train_end = idx[139]
+    test_idx = idx[140:]
+    price_df = pd.DataFrame({"price": np.full(len(idx), 100.0), "volume": 1e6}, index=idx)
+
+    def fake_load(symbol, market="adj_close", **kwargs):
+        return price_df
+
+    class FakeEq:
+        symbol = "VWCE.DE"
+        sigma = 1.0
+        half_life_days = 7.0
+
+        def equilibrium_band(self, prices, *, symbol=None, **kwargs):
+            p = prices.astype(float)
+            residual = np.zeros(len(p))
+            if len(p) > 5:
+                residual[5] = -3.0
+                residual[6] = -3.0
+            return pd.DataFrame({"residual": residual, "equilibrium": p.values}, index=p.index)
+
+    def fake_series(symbol, **kwargs):
+        eps = pd.Series(0.0, index=idx)
+        eps.iloc[145] = -3.0
+        eps.iloc[146] = -3.0
+        rv = pd.Series(True, index=idx)
+        return pd.DataFrame(
+            {
+                "epsilon": eps,
+                "magnitude": eps.abs(),
+                "z_return": eps,
+                "z_volume": 0.0,
+                "z_rel_strength": 0.0,
+                "z_vol": 0.0,
+                "regime_valid": rv,
+                "price": price_df["price"],
+            },
+            index=idx,
+        )
+
+    monkeypatch.setattr(eng, "load_price_bars", fake_load)
+    monkeypatch.setattr(eng, "calibrate_equilibrium", lambda *a, **k: FakeEq())
+    monkeypatch.setattr(eng, "compute_perturbation_series", fake_series)
+
+    result = run_backtest(
+        "VWCE.DE",
+        train_end=train_end,
+        test_start=test_idx[0],
+        epsilon_threshold=2.0,
+        initial_cash_eur=100_000.0,
+        trade_slice_pct=0.10,
+        persist=False,
+    )
+    assert result.total_trades >= 1
+    bought = float(result.trade_volume_shares[result.trade_volume_shares > 0].iloc[0])
+    assert abs(bought - 66.66666666666666) < 0.01  # €10k slice scaled by |ε|/threshold @ €100
+
+
+def test_run_backtest_passes_regime_settings_to_perturbation(monkeypatch):
+    import funtrade.backtest.engine as eng
+    from dataclasses import replace
+    from funtrade.config import Settings
+
+    idx = pd.date_range("2024-01-01", periods=200, freq="D", tz="UTC")
+    train_end = idx[139]
+    test_idx = idx[140:]
+    price_df = pd.DataFrame({"price": np.full(len(idx), 100.0), "volume": 1e6}, index=idx)
+    captured: list = []
+
+    def fake_load(symbol, market="adj_close", **kwargs):
+        return price_df
+
+    class FakeEq:
+        symbol = "VWCE.DE"
+        sigma = 1.0
+        half_life_days = 7.0
+
+        def equilibrium_band(self, prices, *, symbol=None, **kwargs):
+            p = prices.astype(float)
+            return pd.DataFrame({"residual": np.zeros(len(p)), "equilibrium": p.values}, index=p.index)
+
+    def fake_series(symbol, *, settings=None, **kwargs):
+        captured.append(settings)
+        eps = pd.Series(0.0, index=idx)
+        return pd.DataFrame(
+            {
+                "epsilon": eps,
+                "magnitude": eps.abs(),
+                "z_return": eps,
+                "z_volume": 0.0,
+                "z_rel_strength": 0.0,
+                "z_vol": 0.0,
+                "regime_valid": pd.Series(True, index=idx),
+                "price": price_df["price"],
+            },
+            index=idx,
+        )
+
+    monkeypatch.setattr(eng, "load_price_bars", fake_load)
+    monkeypatch.setattr(eng, "calibrate_equilibrium", lambda *a, **k: FakeEq())
+    monkeypatch.setattr(eng, "compute_perturbation_series", fake_series)
+
+    settings = replace(
+        Settings.from_env().for_symbol("VWCE.DE"),
+        regime_spike_sigma=4.5,
+        regime_consecutive_bars=7,
+    )
+    run_backtest(
+        "VWCE.DE",
+        train_end=train_end,
+        test_start=test_idx[0],
+        settings=settings,
+        persist=False,
+    )
+    assert captured
+    assert captured[0].regime_spike_sigma == 4.5
+    assert captured[0].regime_consecutive_bars == 7

@@ -11,6 +11,7 @@ from funtrade.backtest.engine import (
     H0_SOURCE_SAVED,
     H0_SOURCE_WALK_FORWARD,
     backtest_train_test_split,
+    buy_and_hold_from_prices,
     resolve_h0_equilibrium,
     run_backtest,
 )
@@ -29,6 +30,47 @@ from funtrade.paper.runner import run_paper_once
 
 CHART_WINDOW_RECENT = "recent_120"
 CHART_WINDOW_BACKTEST_TEST = "backtest_test"
+
+
+def backtest_params_fingerprint(params: UiParams) -> str:
+    """Stable id for sidebar settings that affect backtest output."""
+    w = params.perturbation_weights()
+    return "|".join(
+        [
+            params.symbol,
+            params.h0_source,
+            f"{params.epsilon_threshold:.6f}",
+            f"{params.regime_spike_sigma:.4f}:{params.regime_consecutive_bars}",
+            f"{w[0]:.4f}:{w[1]:.4f}:{w[2]:.4f}",
+            f"{params.paper_initial_cash:.2f}",
+            f"{params.backtest_position_limit_shares:.2f}",
+            f"{params.trend_epsilon_weight:.4f}:{params.trend_fair_value_weight:.4f}",
+            str(params.trend_gate_sells),
+            f"{params.trend_gate_z:.4f}",
+        ]
+    )
+
+
+def backtest_data_revision(symbol: str, *, settings: Settings | None = None) -> str:
+    """Fingerprint of ingested price bars — invalidates cached UI after ingest/refresh."""
+    from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars
+
+    settings = settings or Settings.from_env()
+    bars = load_price_bars(symbol, MARKET_ADJ_CLOSE, settings=settings.for_symbol(symbol))
+    if bars.empty:
+        return "no-data"
+    last = bars.index[-1]
+    first = bars.index[0]
+    return (
+        f"{len(bars)}|{first}|{last}|"
+        f"{float(bars['price'].iloc[0]):.6f}|{float(bars['price'].iloc[-1]):.6f}"
+    )
+
+
+def backtest_cache_key(params: UiParams) -> str:
+    return f"{backtest_params_fingerprint(params)}::{backtest_data_revision(params.symbol, settings=params.to_settings())}"
+
+
 DEFAULT_REFRESH_DAYS = int(os.getenv("REFRESH_DAYS", "14"))
 
 
@@ -45,6 +87,7 @@ class UiParams:
     paper_trade_slice_pct: float
     paper_fee_bps: float
     paper_position_limit_shares: float
+    backtest_position_limit_shares: float
     h0_weight_oil: float
     h0_weight_climate: float
     trend_epsilon_weight: float
@@ -232,6 +275,15 @@ def fetch_recommendations(
     return df
 
 
+def _backtest_position_limit_default() -> float:
+    return float(
+        os.getenv(
+            "BACKTEST_POSITION_LIMIT_SHARES",
+            os.getenv("PAPER_POSITION_LIMIT_SHARES", "1000"),
+        )
+    )
+
+
 def default_ui_params(symbol: str = "VWCE.DE") -> UiParams:
     base = Settings.from_env()
     sym = base.for_symbol(symbol)
@@ -248,6 +300,7 @@ def default_ui_params(symbol: str = "VWCE.DE") -> UiParams:
         paper_trade_slice_pct=p.trade_slice_pct,
         paper_fee_bps=p.fee_bps,
         paper_position_limit_shares=p.position_limit_shares,
+        backtest_position_limit_shares=_backtest_position_limit_default(),
         h0_weight_oil=base.h0_weight_oil,
         h0_weight_climate=base.h0_weight_climate,
         trend_epsilon_weight=sym.trend_epsilon_weight,
@@ -340,8 +393,10 @@ def perturbation_context(
     settings: Settings | None = None,
     h0_source: str = H0_SOURCE_SAVED,
 ) -> pd.DataFrame:
-    base = settings or Settings.from_env()
-    sym_settings = base.for_symbol(symbol)
+    if settings is None:
+        sym_settings = Settings.from_env().for_symbol(symbol)
+    else:
+        sym_settings = settings
     equilibrium = None
     if h0_source == H0_SOURCE_WALK_FORWARD:
         bars = load_price_bars(symbol, MARKET_ADJ_CLOSE, settings=sym_settings)
@@ -366,6 +421,27 @@ def watchlist_with_class(settings: Settings | None = None) -> list[tuple[str, st
         for sym in cfg.symbols:
             rows.append((sym, name))
     return rows
+
+
+def buy_hold_display(view: dict) -> dict:
+    """Recompute passive hold from stored test-period prices (display source of truth)."""
+    initial = float(view.get("initial_capital_eur", 0.0))
+    price_chart = view.get("price_chart")
+    if isinstance(price_chart, pd.DataFrame) and not price_chart.empty:
+        prices = price_chart.set_index(pd.to_datetime(price_chart["time"]))["price"].astype(float)
+        bh = buy_and_hold_from_prices(prices, initial)
+        start = str(prices.index[0])[:10]
+        end = str(prices.index[-1])[:10]
+        return {**bh, "test_start_date": start, "test_end_date": end}
+    return {
+        "profit_eur": float(view.get("buy_and_hold_profit_eur", 0.0)),
+        "first_price": float(view.get("buy_and_hold_first_price", 0.0)),
+        "last_price": float(view.get("buy_and_hold_last_price", 0.0)),
+        "return_pct": float(view.get("buy_and_hold_return_pct", 0.0)),
+        "final_eur": float(view.get("buy_and_hold_final_eur", initial)),
+        "test_start_date": str(view.get("test_start", ""))[:10],
+        "test_end_date": str(view.get("price_as_of", ""))[:10],
+    }
 
 
 def suggest_epsilon_threshold(epsilon: pd.Series, *, quantile: float = 0.75) -> float:
@@ -394,6 +470,7 @@ def run_backtest_for_ui(params: UiParams) -> dict:
         epsilon_threshold=requested_threshold,
         weights=params.perturbation_weights(),
         initial_cash_eur=params.paper_initial_cash,
+        position_limit_shares=params.backtest_position_limit_shares,
         settings=settings,
         persist=False,
         h0_source=params.h0_source,
@@ -408,6 +485,7 @@ def run_backtest_for_ui(params: UiParams) -> dict:
             epsilon_threshold=suggested,
             weights=params.perturbation_weights(),
             initial_cash_eur=params.paper_initial_cash,
+            position_limit_shares=params.backtest_position_limit_shares,
             settings=settings,
             persist=False,
             h0_source=params.h0_source,
@@ -422,7 +500,16 @@ def run_backtest_for_ui(params: UiParams) -> dict:
     regime = result.regime_valid.astype(bool)
     buy_with_regime = int(((eps < -threshold) & regime).sum())
     buy_blocked_regime = int(((eps < -threshold) & ~regime).sum())
+    price_as_of = None
+    if not result.price.empty:
+        price_as_of = str(result.price.index[-1])
+    data_revision = backtest_data_revision(params.symbol, settings=settings)
+    bh = buy_and_hold_from_prices(result.price, params.paper_initial_cash)
     return {
+        "cache_key": backtest_cache_key(params),
+        "fingerprint": backtest_params_fingerprint(params),
+        "data_revision": data_revision,
+        "price_as_of": price_as_of,
         "symbol": params.symbol,
         "epsilon_threshold": threshold,
         "requested_threshold": requested_threshold,
@@ -434,9 +521,12 @@ def run_backtest_for_ui(params: UiParams) -> dict:
         "buy_signals_with_regime": buy_with_regime,
         "buy_signals_blocked_by_regime": buy_blocked_regime,
         "regime_invalid_days": int((~regime).sum()),
+        "regime_spike_sigma": settings.regime_spike_sigma,
+        "regime_consecutive_bars": settings.regime_consecutive_bars,
         "h0_source": result.h0_source,
         "test_start": str(result.test_start) if result.test_start is not None else None,
         "equilibrium_half_life_days": result.equilibrium_half_life_days,
+        "position_limit_shares": m.get("position_limit_shares", params.backtest_position_limit_shares),
         "initial_capital_eur": m.get("initial_capital_eur", params.paper_initial_cash),
         "final_portfolio_eur": m.get("final_portfolio_eur", params.paper_initial_cash),
         "net_profit_eur": m.get("net_profit_eur", result.total_return),
@@ -448,7 +538,11 @@ def run_backtest_for_ui(params: UiParams) -> dict:
         "unrealized_pnl_eur": m.get("unrealized_pnl_eur", 0.0),
         "total_pnl_eur": m.get("total_pnl_eur", 0.0),
         "total_fees_eur": m.get("total_fees_eur", 0.0),
-        "buy_and_hold_profit_eur": m.get("buy_and_hold_profit_eur", 0.0),
+        "buy_and_hold_profit_eur": bh["profit_eur"],
+        "buy_and_hold_first_price": bh["first_price"],
+        "buy_and_hold_last_price": bh["last_price"],
+        "buy_and_hold_return_pct": bh["return_pct"],
+        "buy_and_hold_final_eur": bh["final_eur"],
         "sharpe": result.sharpe,
         "max_drawdown": result.max_drawdown,
         "total_return": result.total_return,
@@ -472,12 +566,18 @@ def run_backtest_for_ui(params: UiParams) -> dict:
             {
                 "time": eps.index,
                 "epsilon": eps.values,
+                "regime_valid": result.regime_valid.values,
                 "trade_signal": result.trade_signal.values,
             }
         ),
         "price_chart": pd.DataFrame(
-            {"time": result.price.index, "price": result.price.values}
-        ),
+            {
+                "time": result.price.index,
+                "price": result.price.astype(float).values,
+                "Fair price (H₀)": result.fair_price.astype(float).values,
+                "Fair + perturbation (ε)": result.fair_plus_perturbation.astype(float).values,
+            }
+        ).copy(),
     }
 
 

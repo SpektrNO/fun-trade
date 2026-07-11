@@ -185,6 +185,7 @@ Not in the UI sidebar; affects Wallet tab, paper runner, and backtest capital.
 | **`PAPER_TRADE_SLICE_PCT`** | Fraction of initial cash per buy/sell tranche (default `0.10` = 10% → €10k on €100k); fractional shares |
 | **`PAPER_FEE_BPS`** / **`BACKTEST_FEE_BPS`** | Transaction cost per trade |
 | **`PAPER_POSITION_LIMIT_SHARES`** | Max position size per symbol |
+| **`BACKTEST_TRADE_SLICE_PCT`** | Same slice rule for walk-forward backtest (defaults to `PAPER_TRADE_SLICE_PCT`) |
 | **`BACKTEST_INITIAL_CASH_EUR`** | Backtest starting capital (defaults to paper size) |
 
 ---

@@ -18,8 +18,19 @@ class ChartRenderer(ABC):
         x: str,
         y: str | list[str],
         title: str | None = None,
+        chart_key: str | None = None,
     ) -> None:
         """Single time-series line chart (optionally multiple y columns)."""
+
+    @abstractmethod
+    def render_epsilon_chart(
+        self,
+        df: pd.DataFrame,
+        *,
+        epsilon_threshold: float,
+        chart_key: str | None = None,
+    ) -> None:
+        """ε with ±threshold bands and regime_valid shading when present."""
 
     @abstractmethod
     def render_trade_charts(
@@ -34,5 +45,5 @@ class ChartRenderer(ABC):
         """Trade tab: ε bands, price, and optional z_trend panels."""
 
     @abstractmethod
-    def render_pnl_with_trades(self, df: pd.DataFrame) -> None:
+    def render_pnl_with_trades(self, df: pd.DataFrame, *, chart_key: str | None = None) -> None:
         """Backtest: realized/unrealized PnL with buy/sell share bars."""

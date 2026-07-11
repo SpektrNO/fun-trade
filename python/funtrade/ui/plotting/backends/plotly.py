@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 import pandas as pd
@@ -10,7 +11,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from funtrade.ui.plotting.base import ChartRenderer
-from funtrade.ui.plotting.data import prepare_trade_chart_frames
+from funtrade.ui.plotting.data import normalize_chart_times, prepare_trade_chart_frames, regime_invalid_spans
 
 _LAYOUT = dict(
     height=360,
@@ -25,7 +26,11 @@ def _chart_key(*parts: str) -> str:
     raw = "-".join(p for p in parts if p).lower()
     raw = re.sub(r"[^a-z0-9\-]+", "-", raw)
     raw = re.sub(r"-+", "-", raw).strip("-")
-    return f"plotly-{raw}"[:80]
+    key = f"plotly-{raw}"
+    if len(key) > 80:
+        digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
+        key = f"plotly-{digest}"
+    return key
 
 
 def _show(fig: go.Figure, *, key: str) -> None:
@@ -39,13 +44,76 @@ def _time_series_figure(df: pd.DataFrame, *, x: str, y: str | list[str], title: 
     plot_df = df.copy()
     plot_df[x] = pd.to_datetime(plot_df[x])
     cols = [y] if isinstance(y, str) else list(y)
+    line_styles: dict[str, dict] = {
+        "price": dict(line=dict(color="#2c3e50", width=2)),
+        "Fair price (H₀)": dict(line=dict(color="#e67e22", dash="dash", width=1.5)),
+        "Fair + perturbation (ε)": dict(line=dict(color="#3498db", dash="dot", width=1.5)),
+    }
     fig = go.Figure()
     for col in cols:
         if col not in plot_df.columns:
             continue
-        fig.add_trace(go.Scatter(x=plot_df[x], y=plot_df[col], mode="lines", name=col))
+        style = line_styles.get(col, {})
+        fig.add_trace(go.Scatter(x=plot_df[x], y=plot_df[col], mode="lines", name=col, **style))
     if title:
         fig.update_layout(title=title)
+    return fig
+
+
+def _epsilon_figure(df: pd.DataFrame, *, epsilon_threshold: float) -> go.Figure:
+    plot_df = df.copy()
+    if plot_df.empty or "epsilon" not in plot_df.columns:
+        return go.Figure()
+    plot_df["time"] = normalize_chart_times(plot_df["time"])
+    x = plot_df["time"]
+
+    fig = go.Figure()
+    for start, end in regime_invalid_spans(plot_df):
+        fig.add_vrect(
+            x0=start,
+            x1=end,
+            fillcolor="rgba(231, 76, 60, 0.18)",
+            line_width=0,
+            layer="below",
+        )
+
+    fig.add_trace(go.Scatter(x=x, y=plot_df["epsilon"], mode="lines", name="ε", line=dict(color="#8e44ad", width=2)))
+    if "upper" in plot_df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=plot_df["upper"],
+                mode="lines",
+                name=f"+{epsilon_threshold:.2f}",
+                line=dict(color="#95a5a6", dash="dash", width=1),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=plot_df["lower"],
+                mode="lines",
+                name=f"−{epsilon_threshold:.2f}",
+                line=dict(color="#95a5a6", dash="dash", width=1),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=plot_df["zero"],
+                mode="lines",
+                name="0",
+                line=dict(color="#bdc3c7", dash="dot", width=1),
+                showlegend=False,
+            )
+        )
+    else:
+        fig.add_hline(y=epsilon_threshold, line_dash="dash", line_color="#95a5a6", annotation_text=f"+{epsilon_threshold:.2f}")
+        fig.add_hline(y=-epsilon_threshold, line_dash="dash", line_color="#95a5a6", annotation_text=f"−{epsilon_threshold:.2f}")
+        fig.add_hline(y=0.0, line_dash="dot", line_color="#bdc3c7")
+
+    fig.update_yaxes(title_text="ε", autorange=True)
+    fig.update_xaxes(autorange=True)
     return fig
 
 
@@ -57,11 +125,32 @@ class PlotlyRenderer(ChartRenderer):
         x: str,
         y: str | list[str],
         title: str | None = None,
+        chart_key: str | None = None,
     ) -> None:
         if title:
             st.subheader(title)
         y_key = y if isinstance(y, str) else "-".join(y)
-        _show(_time_series_figure(df, x=x, y=y, title=None), key=_chart_key("ts", title or y_key))
+        _show(
+            _time_series_figure(df, x=x, y=y, title=None),
+            key=_chart_key("ts", chart_key or title or y_key),
+        )
+
+    def render_epsilon_chart(
+        self,
+        df: pd.DataFrame,
+        *,
+        epsilon_threshold: float,
+        chart_key: str | None = None,
+    ) -> None:
+        plot_df = df.copy()
+        if "upper" not in plot_df.columns:
+            plot_df["upper"] = epsilon_threshold
+            plot_df["lower"] = -epsilon_threshold
+            plot_df["zero"] = 0.0
+        _show(
+            _epsilon_figure(plot_df, epsilon_threshold=epsilon_threshold),
+            key=_chart_key("eps", chart_key or "epsilon"),
+        )
 
     def render_trade_charts(
         self,
@@ -80,13 +169,11 @@ class PlotlyRenderer(ChartRenderer):
         )
 
         st.subheader("ε")
-        st.caption(f"Buy/sell band at ±{epsilon_threshold:.2f}")
-        _show(
-            _time_series_figure(
-                charts["epsilon"], x="time", y=["epsilon", "upper", "lower", "zero"], title=None,
-            ),
-            key=_chart_key("trade", "epsilon"),
+        st.caption(
+            f"Buy/sell band at ±{epsilon_threshold:.2f}. "
+            "Red shading: regime invalid (new buys blocked)."
         )
+        self.render_epsilon_chart(charts["epsilon"], epsilon_threshold=epsilon_threshold, chart_key="trade-epsilon")
 
         st.subheader(f"Price ({currency})")
         _show(
@@ -104,7 +191,7 @@ class PlotlyRenderer(ChartRenderer):
                 key=_chart_key("trade", "z-trend"),
             )
 
-    def render_pnl_with_trades(self, df: pd.DataFrame) -> None:
+    def render_pnl_with_trades(self, df: pd.DataFrame, *, chart_key: str | None = None) -> None:
         plot_df = df.copy()
         if "time" in plot_df.columns:
             plot_df["time"] = pd.to_datetime(plot_df["time"])
@@ -139,5 +226,4 @@ class PlotlyRenderer(ChartRenderer):
 
         fig.update_yaxes(title_text="PnL (EUR)", secondary_y=False)
         fig.update_yaxes(title_text="Shares traded", secondary_y=True)
-        fig.update_layout(title="Realized vs unrealized PnL")
-        _show(fig, key=_chart_key("pnl", "trades"))
+        _show(fig, key=_chart_key("pnl", chart_key or "trades"))

@@ -60,7 +60,8 @@ def compute_perturbation_series(
     settings: Settings | None = None,
     equilibrium: EquilibriumModel | None = None,
 ) -> pd.DataFrame:
-    settings = (settings or Settings.from_env()).for_symbol(symbol)
+    if settings is None:
+        settings = Settings.from_env().for_symbol(symbol)
     if weights is None:
         weights = settings.perturbation_weights()
     equilibrium = equilibrium or load_or_calibrate(symbol, settings=settings)

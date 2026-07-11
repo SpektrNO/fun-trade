@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +12,7 @@ import pandas as pd
 
 from funtrade.config import Settings
 from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars, normalize_daily_bars, save_backtest_run
-from funtrade.execution.paper import _position_after_trade
+from funtrade.execution.paper import PaperSettings, _fee_rate, _position_after_trade, compute_trade_qty
 from funtrade.models.equilibrium import EquilibriumModel, calibrate_equilibrium, load_or_calibrate
 from funtrade.models.perturbation import compute_perturbation_series, signal_from_epsilon, trend_signal_kwargs
 
@@ -52,17 +52,30 @@ def _daily_last_bars(frame: pd.DataFrame) -> pd.DataFrame:
     return normalize_daily_bars(frame)
 
 
-def _backtest_config() -> tuple[float, float, float, float]:
-    fee_bps = float(os.getenv("BACKTEST_FEE_BPS", "5"))
-    limit = float(os.getenv("BACKTEST_POSITION_LIMIT_SHARES", "1000"))
-    trade_shares = float(os.getenv("BACKTEST_TRADE_SHARES", "10"))
-    initial_cash = float(
-        os.getenv(
-            "BACKTEST_INITIAL_CASH_EUR",
-            os.getenv("PAPER_INITIAL_CASH_EUR", "100000"),
-        )
+def _backtest_wallet_config() -> PaperSettings:
+    """Backtest wallet sizing — defaults mirror paper trade slice rules."""
+    return PaperSettings(
+        initial_cash=float(
+            os.getenv(
+                "BACKTEST_INITIAL_CASH_EUR",
+                os.getenv("PAPER_INITIAL_CASH_EUR", "100000"),
+            )
+        ),
+        position_limit_shares=float(
+            os.getenv(
+                "BACKTEST_POSITION_LIMIT_SHARES",
+                os.getenv("PAPER_POSITION_LIMIT_SHARES", "1000"),
+            )
+        ),
+        fee_bps=float(os.getenv("BACKTEST_FEE_BPS", os.getenv("PAPER_FEE_BPS", "5"))),
+        trade_slice_pct=float(
+            os.getenv(
+                "BACKTEST_TRADE_SLICE_PCT",
+                os.getenv("PAPER_TRADE_SLICE_PCT", "0.10"),
+            )
+        ),
+        csv_path=Path(os.devnull),
     )
-    return fee_bps, limit, trade_shares, initial_cash
 
 
 @dataclass
@@ -77,6 +90,8 @@ class BacktestResult:
     regime_invalidations: int
     equity_curve: pd.Series
     price: pd.Series
+    fair_price: pd.Series
+    fair_plus_perturbation: pd.Series
     position_shares: pd.Series
     trade_volume_shares: pd.Series
     epsilon: pd.Series
@@ -89,6 +104,37 @@ class BacktestResult:
     h0_source: str = H0_SOURCE_WALK_FORWARD
     test_start: pd.Timestamp | None = None
     equilibrium_half_life_days: float | None = None
+
+
+def buy_and_hold_from_prices(prices: pd.Series, initial_cash: float) -> dict:
+    """Passive buy at test-period start, hold to end (benchmark for the strategy)."""
+    if prices.empty or initial_cash <= 0:
+        return {
+            "profit_eur": 0.0,
+            "first_price": 0.0,
+            "last_price": 0.0,
+            "return_pct": 0.0,
+            "final_eur": float(initial_cash),
+        }
+    first = float(prices.iloc[0])
+    last = float(prices.iloc[-1])
+    if first <= 0:
+        return {
+            "profit_eur": 0.0,
+            "first_price": first,
+            "last_price": last,
+            "return_pct": 0.0,
+            "final_eur": float(initial_cash),
+        }
+    final = initial_cash * (last / first)
+    profit = final - initial_cash
+    return {
+        "profit_eur": profit,
+        "first_price": first,
+        "last_price": last,
+        "return_pct": (last / first - 1.0) * 100.0,
+        "final_eur": final,
+    }
 
 
 def _compute_portfolio_metrics(
@@ -183,13 +229,14 @@ def run_backtest(
     fee_bps: float | None = None,
     position_limit_shares: float | None = None,
     trade_shares: float | None = None,
+    trade_slice_pct: float | None = None,
     initial_cash_eur: float | None = None,
     settings: Settings | None = None,
     persist: bool = True,
     h0_source: str = H0_SOURCE_WALK_FORWARD,
 ) -> BacktestResult:
-    settings = settings or Settings.from_env()
-    settings = settings.for_symbol(symbol)
+    if settings is None:
+        settings = Settings.from_env().for_symbol(symbol)
     if epsilon_threshold is None:
         epsilon_threshold = settings.epsilon_threshold
     if weights is None:
@@ -228,16 +275,27 @@ def run_backtest(
     test = _daily_last_bars(test)
 
     price = test["price"].astype(float)
+    z_trend = test["z_trend"] if "z_trend" in test.columns else None
+    fair_price = (
+        equilibrium.equilibrium_band(price, symbol=symbol, settings=settings, z_trend=z_trend)["equilibrium"]
+        .astype(float)
+    )
+    epsilon_series = test["epsilon"].astype(float)
+    fair_plus_perturbation = np.exp(
+        np.log(fair_price.clip(lower=1e-6)) + epsilon_series * equilibrium.sigma
+    )
 
-    fee_bps_val, position_limit, trade_qty, initial_cash = _backtest_config()
+    wallet = _backtest_wallet_config()
     if fee_bps is not None:
-        fee_bps_val = fee_bps
+        wallet = replace(wallet, fee_bps=fee_bps)
     if position_limit_shares is not None:
-        position_limit = position_limit_shares
-    if trade_shares is not None:
-        trade_qty = trade_shares
+        wallet = replace(wallet, position_limit_shares=position_limit_shares)
+    if trade_slice_pct is not None:
+        wallet = replace(wallet, trade_slice_pct=trade_slice_pct)
     if initial_cash_eur is not None:
-        initial_cash = initial_cash_eur
+        wallet = replace(wallet, initial_cash=initial_cash_eur)
+    initial_cash = wallet.initial_cash
+    fixed_qty = trade_shares
 
     signals = pd.Series(0, index=test.index, dtype=int)
     model_signals = pd.Series(0, index=test.index, dtype=int)
@@ -266,11 +324,21 @@ def run_backtest(
         model_signals.iloc[i] = raw
         traded = 0.0
         if raw != 0:
-            if raw > 0:
-                delta = trade_qty
-                cost = delta * bar_price
-                fee = cost * (fee_bps_val / 10000.0)
-                if cash >= cost + fee and position + delta <= position_limit:
+            side = "buy" if raw > 0 else "sell"
+            delta = compute_trade_qty(
+                side=side,
+                price=bar_price,
+                cash_eur=cash,
+                net_qty=position,
+                paper=wallet,
+                epsilon=float(row["epsilon"]),
+                epsilon_threshold=epsilon_threshold,
+                qty_shares=fixed_qty,
+            )
+            if delta > 0:
+                if raw > 0:
+                    cost = delta * bar_price
+                    fee = cost * _fee_rate(wallet.fee_bps)
                     position, avg_cost, realized_delta = _position_after_trade(
                         position, avg_cost, "buy", delta, bar_price
                     )
@@ -279,11 +347,9 @@ def run_backtest(
                     total_fees += fee
                     signals.iloc[i] = raw
                     traded = delta
-            else:
-                delta = min(trade_qty, position)
-                if delta > 0:
+                else:
                     proceeds = delta * bar_price
-                    fee = proceeds * (fee_bps_val / 10000.0)
+                    fee = proceeds * _fee_rate(wallet.fee_bps)
                     position, avg_cost, realized_delta = _position_after_trade(
                         position, avg_cost, "sell", delta, bar_price
                     )
@@ -316,17 +382,14 @@ def run_backtest(
     monthly_pnl = portfolio_value.diff().fillna(0.0).resample("ME").sum().to_dict()
     monthly_pnl = {str(k): float(v) for k, v in monthly_pnl.items()}
 
-    first_price = float(price.iloc[0])
-    buy_hold_shares = initial_cash / first_price if first_price > 0 else 0.0
-    buy_hold_final = buy_hold_shares * last_price
-    buy_hold_profit = buy_hold_final - initial_cash
+    bh = buy_and_hold_from_prices(price, initial_cash)
 
     full_metrics = {
         **metrics,
         "regime_invalidations": regime_invalidations,
-        "fee_bps": fee_bps_val,
-        "position_limit_shares": position_limit,
-        "trade_shares": trade_qty,
+        "fee_bps": wallet.fee_bps,
+        "position_limit_shares": wallet.position_limit_shares,
+        "trade_slice_pct": wallet.trade_slice_pct,
         "total_traded_shares": float(trade_volumes.sum()),
         "total_fees_eur": total_fees,
         "realized_pnl_eur": realized_pnl,
@@ -335,8 +398,11 @@ def run_backtest(
         "avg_cost_eur": avg_cost if position > 0 else 0.0,
         "final_cash_eur": float(cash_series.iloc[-1]),
         "final_shares": float(positions.iloc[-1]),
-        "buy_and_hold_final_eur": buy_hold_final,
-        "buy_and_hold_profit_eur": buy_hold_profit,
+        "buy_and_hold_first_price": bh["first_price"],
+        "buy_and_hold_last_price": bh["last_price"],
+        "buy_and_hold_return_pct": bh["return_pct"],
+        "buy_and_hold_final_eur": bh["final_eur"],
+        "buy_and_hold_profit_eur": bh["profit_eur"],
         "monthly_pnl": monthly_pnl,
     }
 
@@ -362,6 +428,8 @@ def run_backtest(
         regime_invalidations=regime_invalidations,
         equity_curve=equity,
         price=price,
+        fair_price=fair_price,
+        fair_plus_perturbation=fair_plus_perturbation,
         position_shares=positions,
         trade_volume_shares=trade_volumes,
         epsilon=test["epsilon"].astype(float),
@@ -428,7 +496,7 @@ def compare_to_buy_and_hold(symbol: str, **kwargs) -> dict:
             test_start = series.index[0]
     test = series[series.index >= test_start]
     price = test["price"].astype(float)
-    _, _, _, initial_cash = _backtest_config()
+    initial_cash = _backtest_wallet_config().initial_cash
 
     bench = load_price_bars(settings.benchmark, MARKET_ADJ_CLOSE, settings=settings)
     bench_test = bench["price"].astype(float).reindex(test.index, method="ffill")

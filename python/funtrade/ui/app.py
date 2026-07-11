@@ -27,6 +27,10 @@ from funtrade.ui.service import (
     fetch_recommendations,
     perturbation_context,
     run_backtest_for_ui,
+    backtest_params_fingerprint,
+    backtest_cache_key,
+    backtest_data_revision,
+    buy_hold_display,
     run_refresh,
     slice_perturbation_for_chart,
     watchlist_with_class,
@@ -51,6 +55,39 @@ def _recommendation_row_styles(row: pd.Series) -> list[str]:
         return [""] * len(row)
     return [css] * len(row)
 
+
+def _backtest_views() -> dict:
+    if "backtest_views" not in st.session_state:
+        st.session_state.backtest_views = {}
+    return st.session_state.backtest_views
+
+
+def _clear_backtest_views() -> None:
+    st.session_state.pop("backtest_views", None)
+    st.session_state.pop("backtest_view", None)
+
+
+def _store_backtest_view(view: dict) -> None:
+    symbol = view.get("symbol")
+    if not symbol:
+        return
+    st.session_state.backtest_run_id = st.session_state.get("backtest_run_id", 0) + 1
+    stored = dict(view)
+    stored["run_id"] = st.session_state.backtest_run_id
+    for key in ("equity_curve", "pnl_curve", "epsilon", "trade_chart", "price_chart"):
+        df = stored.get(key)
+        if isinstance(df, pd.DataFrame):
+            stored[key] = df.copy(deep=True)
+    _backtest_views()[symbol] = stored
+    st.session_state.pop("backtest_view", None)
+
+
+def _backtest_stat(col, label: str, value: str) -> None:
+    """Markdown stat cell — avoids st.metric widget reuse across reruns."""
+    with col:
+        st.caption(label)
+        st.markdown(f"**{value}**")
+
 settings = Settings.from_env()
 chart_renderer = get_chart_renderer(settings=settings)
 if "params" not in st.session_state:
@@ -72,6 +109,15 @@ if not hasattr(params, "h0_source"):
 if not hasattr(params, "paper_trade_slice_pct"):
     _p = default_ui_params(params.symbol)
     _migrate.update(paper_trade_slice_pct=_p.paper_trade_slice_pct)
+if not hasattr(params, "regime_spike_sigma"):
+    _p = default_ui_params(params.symbol)
+    _migrate.update(
+        regime_spike_sigma=_p.regime_spike_sigma,
+        regime_consecutive_bars=_p.regime_consecutive_bars,
+    )
+if not hasattr(params, "backtest_position_limit_shares"):
+    _p = default_ui_params(params.symbol)
+    _migrate.update(backtest_position_limit_shares=_p.backtest_position_limit_shares)
 if _migrate:
     params = replace(params, **_migrate)
     st.session_state.params = params
@@ -96,19 +142,73 @@ if _chosen != params.symbol:
         paper_trade_slice_pct=_prev.paper_trade_slice_pct,
         paper_fee_bps=_prev.paper_fee_bps,
         paper_position_limit_shares=_prev.paper_position_limit_shares,
+        backtest_position_limit_shares=_prev.backtest_position_limit_shares,
         h0_weight_oil=_prev.h0_weight_oil,
         h0_weight_climate=_prev.h0_weight_climate,
         h0_source=_prev.h0_source,
         epsilon_chart_window=_prev.epsilon_chart_window,
     )
     st.session_state.params = params
+    _clear_backtest_views()
 params.symbol = _chosen
 _asset_class = settings.for_symbol(params.symbol).asset_class or "etf"
 st.sidebar.caption(f"Asset class: **{_asset_class.replace('_', ' ')}** (from config.json)")
 params.epsilon_threshold = st.sidebar.slider("ε threshold", 0.3, 3.0, float(params.epsilon_threshold), 0.05)
-params.w_return = st.sidebar.slider("w_return", 0.0, 1.0, float(params.w_return), 0.05)
-params.w_volume = st.sidebar.slider("w_volume", 0.0, 1.0, float(params.w_volume), 0.05)
-params.w_rel_strength = st.sidebar.slider("w_rel_strength", 0.0, 1.0, float(params.w_rel_strength), 0.05)
+st.sidebar.markdown("**H₁ blend weights**")
+params.w_return = st.sidebar.slider(
+    "w_return",
+    0.0,
+    1.0,
+    float(params.w_return),
+    0.05,
+    help="Weight on price vs H₀ fair value — main dial for mean-reversion sensitivity to pullbacks.",
+)
+params.w_volume = st.sidebar.slider(
+    "w_volume",
+    0.0,
+    1.0,
+    float(params.w_volume),
+    0.05,
+    help="Weight on unusual volume vs 20-day baseline — stress days can push ε past the band sooner.",
+)
+params.w_rel_strength = st.sidebar.slider(
+    "w_rel_strength",
+    0.0,
+    1.0,
+    float(params.w_rel_strength),
+    0.05,
+    help="Weight on return vs sector/benchmark ETF — more buy signal when the symbol lags its peer.",
+)
+
+st.sidebar.markdown("**Regime gate**")
+params.regime_spike_sigma = st.sidebar.slider(
+    "Regime spike σ",
+    1.5,
+    5.0,
+    float(params.regime_spike_sigma),
+    0.1,
+    help="|ε| must exceed this on consecutive days to flag stress and block new buys.",
+)
+params.regime_consecutive_bars = int(
+    st.sidebar.slider(
+        "Regime consecutive bars",
+        1,
+        10,
+        int(params.regime_consecutive_bars),
+        1,
+        help="How many consecutive spike days before regime_valid becomes false.",
+    )
+)
+
+st.sidebar.markdown("**Backtest wallet**")
+params.backtest_position_limit_shares = st.sidebar.number_input(
+    "Max shares (backtest)",
+    min_value=100.0,
+    max_value=50000.0,
+    value=float(params.backtest_position_limit_shares),
+    step=100.0,
+    help="Maximum position size per symbol in the walk-forward backtest (separate from paper wallet).",
+)
 
 if settings.h0_enable_oil or settings.h0_enable_climate:
     st.sidebar.markdown("**H₀ macro weights**")
@@ -211,6 +311,7 @@ if st.sidebar.button(
             )
             st.session_state.refresh_result = result
             st.session_state.pop("recommendations_df", None)
+            _clear_backtest_views()
         except Exception as exc:
             st.session_state.refresh_result = {"ok": False, "error": str(exc), "days": _refresh_days}
     st.rerun()
@@ -277,99 +378,166 @@ with tab_backtest:
     else:
         st.warning("No H₀ params for this source. Run calibrate first (saved mode).")
 
-    if st.button("Run backtest"):
+    if st.button("Run backtest", type="primary"):
         try:
-            view = run_backtest_for_ui(params)
-            st.session_state.backtest_view = view
+            _store_backtest_view(run_backtest_for_ui(params))
         except Exception as e:
             st.error(str(e))
+        else:
+            st.rerun()
 
-    if "backtest_view" in st.session_state:
-        view = st.session_state.backtest_view
-        st.caption(
-            f"Simulated wallet starting with **€{view['initial_capital_eur']:,.0f}**. "
-            "**Realized** = closed trades; **Unrealized** = open position mark-to-market. "
-            f"Net profit = total PnL − fees (€{view.get('total_fees_eur', 0):,.2f})."
-        )
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Realized PnL (EUR)", f"{view['realized_pnl_eur']:+,.2f}")
-        m2.metric("Unrealized PnL (EUR)", f"{view['unrealized_pnl_eur']:+,.2f}")
-        m3.metric("Total PnL (EUR)", f"{view['total_pnl_eur']:+,.2f}")
-        m4.metric("Net profit (EUR)", f"{view['net_profit_eur']:+,.2f}", f"{view['return_pct']:+.2f}%")
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Final portfolio (EUR)", f"{view['final_portfolio_eur']:,.2f}")
-        c2.metric("Cash at end", f"€{view['final_cash_eur']:,.2f}")
-        c3.metric("Shares at end", f"{view['final_shares']:,.0f}")
-        c4.metric("Trades", view["total_trades"])
-
-        c5, c6, c7 = st.columns(3)
-        c5.metric("Buy & hold profit (EUR)", f"{view['buy_and_hold_profit_eur']:+,.2f}")
-        c6.metric("Avg cost (if holding)", f"€{view.get('avg_cost_eur', 0):,.2f}")
-        c7.metric("Max drawdown (EUR)", f"{view['max_drawdown']:,.2f}")
-
-        if view.get("threshold_adjusted"):
-            st.info(
-                f"No trades at ε **{view['requested_threshold']:.2f}** "
-                f"(no buy signals on daily close). Re-ran at **{view['epsilon_threshold']:.2f}**."
-            )
-
-        if view.get("total_trades", 0) == 0:
-            max_abs = view.get("epsilon_max_abs", 0.0)
-            th = view.get("epsilon_threshold", params.epsilon_threshold)
-            suggested = view.get("suggested_threshold", 0.75)
-            blocked = view.get("buy_signals_blocked_by_regime", 0)
-            msg = (
-                f"No trades at ε threshold **{th:.2f}**. "
-                f"Test-period max |ε| is **{max_abs:.2f}** "
-                f"(buy signals: {view.get('buy_model_signals', 0)}, "
-                f"sell signals: {view.get('sell_model_signals', 0)}). "
-            )
-            if blocked > 0:
-                msg += (
-                    f"**{blocked}** buy day(s) had ε below threshold but **regime_valid=false** "
-                    f"(often zero volume on mutual-fund NAV feeds). "
+    view = _backtest_views().get(params.symbol)
+    current_key = backtest_cache_key(params)
+    if view is not None:
+        if view.get("cache_key") != current_key:
+            fp = backtest_params_fingerprint(params)
+            if view.get("fingerprint") != fp:
+                st.info(
+                    "Sidebar settings changed since the last backtest — click **Run backtest** to refresh."
                 )
-            msg += f"Daily UCITS data rarely reaches 2.0 — try **{suggested:.2f}** or lower in the sidebar."
-            st.warning(msg)
-            if st.button(f"Use suggested threshold ({suggested:.2f})"):
-                params.epsilon_threshold = suggested
-                st.session_state.params = params
-                st.rerun()
+            elif view.get("data_revision") != backtest_data_revision(
+                params.symbol, settings=params.to_settings()
+            ):
+                st.info(
+                    "Price data changed since the last backtest (ingest/refresh) — click **Run backtest**."
+                )
+            else:
+                st.info("Backtest is out of date — click **Run backtest** to refresh.")
+        else:
+            rid = view.get("run_id", 0)
+            chart_key = f"{params.symbol}-r{rid}"
+            as_of = view.get("price_as_of")
+            cap = (
+                f"Backtest run **#{rid}** · simulated wallet **€{view['initial_capital_eur']:,.0f}** · "
+                f"max **{view.get('position_limit_shares', params.backtest_position_limit_shares):,.0f}** shares. "
+                "**Realized** = closed trades; **Unrealized** = open position mark-to-market. "
+                f"Net profit = total PnL − fees (€{view.get('total_fees_eur', 0):,.2f})."
+            )
+            if as_of:
+                cap += f" Prices through **{as_of[:10]}**."
+            st.caption(cap)
+            m1, m2, m3, m4 = st.columns(4)
+            _backtest_stat(m1, "Realized PnL (EUR)", f"{view['realized_pnl_eur']:+,.2f}")
+            _backtest_stat(m2, "Unrealized PnL (EUR)", f"{view['unrealized_pnl_eur']:+,.2f}")
+            _backtest_stat(m3, "Total PnL (EUR)", f"{view['total_pnl_eur']:+,.2f}")
+            _backtest_stat(
+                m4,
+                "Net profit (EUR)",
+                f"{view['net_profit_eur']:+,.2f} ({view['return_pct']:+.2f}%)",
+            )
 
-        if isinstance(view.get("trade_chart"), pd.DataFrame) and not view["trade_chart"].empty:
-            h0_label = "saved" if view.get("h0_source") == H0_SOURCE_SAVED else "walk-forward"
+            c1, c2, c3, c4 = st.columns(4)
+            _backtest_stat(c1, "Final portfolio (EUR)", f"{view['final_portfolio_eur']:,.2f}")
+            _backtest_stat(c2, "Cash at end", f"€{view['final_cash_eur']:,.2f}")
+            _backtest_stat(c3, "Shares at end", f"{view['final_shares']:,.0f}")
+            _backtest_stat(c4, "Trades", str(view["total_trades"]))
+
+            c5, c6, c7 = st.columns(3)
+            bh = buy_hold_display(view)
+            _backtest_stat(
+                c5,
+                "Buy & hold (test period)",
+                f"{bh['profit_eur']:+,.2f} ({bh['return_pct']:+.1f}%)",
+            )
+            _backtest_stat(c6, "Avg cost (if holding)", f"€{view.get('avg_cost_eur', 0):,.2f}")
+            _backtest_stat(c7, "Max drawdown (EUR)", f"{view['max_drawdown']:,.2f}")
             st.caption(
-                f"ε chart: **test period** from **{h0_label}** H₀ "
-                f"(from {view.get('test_start', '?')}). "
-                "Match Trade tab: same H₀ source + “Backtest test period” window."
+                f"**Buy & hold** is a passive benchmark (not your strategy): invest **€{view['initial_capital_eur']:,.0f}** "
+                f"at **€{bh['first_price']:,.2f}** on {bh['test_start_date']} and hold to **€{bh['last_price']:,.2f}** "
+                f"on {bh['test_end_date']}. "
+                "It does **not** depend on ε trades — with **0 strategy trades**, net profit stays **€0** "
+                "while buy & hold can still be large in a rising test window."
             )
-            chart_renderer.render_time_series(view["trade_chart"], x="time", y="epsilon")
-        if isinstance(view.get("price_chart"), pd.DataFrame) and not view["price_chart"].empty:
-            chart_renderer.render_time_series(
-                view["price_chart"],
-                x="time",
-                y="price",
-                title=f"Price ({settings.currency}) — test period",
-            )
-        if isinstance(view.get("pnl_curve"), pd.DataFrame) and not view["pnl_curve"].empty:
-            st.subheader("Realized vs unrealized PnL")
-            chart_renderer.render_pnl_with_trades(view["pnl_curve"])
-            traded = view["pnl_curve"]
-            if {"shares_bought", "shares_sold"}.issubset(traded.columns):
-                total_bought = float(traded["shares_bought"].sum())
-                total_sold = float(traded["shares_sold"].sum())
-                st.caption(
-                    f"Test period: **{total_bought:,.0f}** shares bought, **{total_sold:,.0f}** shares sold "
-                    f"(bars on secondary axis)."
+
+            if view.get("threshold_adjusted"):
+                st.info(
+                    f"No trades at ε **{view['requested_threshold']:.2f}** "
+                    f"(no buy signals on daily close). Re-ran at **{view['epsilon_threshold']:.2f}**."
                 )
-        if isinstance(view.get("equity_curve"), pd.DataFrame) and not view["equity_curve"].empty:
-            chart_renderer.render_time_series(
-                view["equity_curve"],
-                x="time",
-                y="portfolio_eur",
-                title="Portfolio value over test period",
-            )
+
+            if view.get("total_trades", 0) == 0:
+                max_abs = view.get("epsilon_max_abs", 0.0)
+                th = view.get("epsilon_threshold", params.epsilon_threshold)
+                suggested = view.get("suggested_threshold", 0.75)
+                blocked = view.get("buy_signals_blocked_by_regime", 0)
+                msg = (
+                    f"No trades at ε threshold **{th:.2f}**. "
+                    f"Test-period max |ε| is **{max_abs:.2f}** "
+                    f"(buy signals: {view.get('buy_model_signals', 0)}, "
+                    f"sell signals: {view.get('sell_model_signals', 0)}). "
+                )
+                if blocked > 0:
+                    msg += (
+                        f"**{blocked}** buy day(s) had ε below threshold but **regime_valid=false** "
+                        f"(often zero volume on mutual-fund NAV feeds). "
+                    )
+                msg += f"Daily UCITS data rarely reaches 2.0 — try **{suggested:.2f}** or lower in the sidebar."
+                st.warning(msg)
+                if st.button(f"Use suggested threshold ({suggested:.2f})", key=f"bt-suggest-{rid}"):
+                    params.epsilon_threshold = suggested
+                    st.session_state.params = params
+                    try:
+                        _store_backtest_view(run_backtest_for_ui(params))
+                    except Exception as e:
+                        st.error(str(e))
+                    else:
+                        st.rerun()
+
+            if isinstance(view.get("trade_chart"), pd.DataFrame) and not view["trade_chart"].empty:
+                h0_label = "saved" if view.get("h0_source") == H0_SOURCE_SAVED else "walk-forward"
+                st.subheader("ε")
+                st.caption(
+                    f"ε chart: **test period** from **{h0_label}** H₀ "
+                    f"(from {view.get('test_start', '?')}). "
+                    f"Regime gate: spike σ **{view.get('regime_spike_sigma', params.regime_spike_sigma):.1f}**, "
+                    f"**{view.get('regime_consecutive_bars', params.regime_consecutive_bars)}** consecutive bars "
+                    f"({view.get('regime_invalid_days', 0)} invalid days). "
+                    "Red shading = **regime invalid** (new buys blocked). "
+                    "Match Trade tab: same H₀ source + “Backtest test period” window."
+                )
+                chart_renderer.render_epsilon_chart(
+                    view["trade_chart"],
+                    epsilon_threshold=view.get("epsilon_threshold", params.epsilon_threshold),
+                    chart_key=f"{chart_key}-epsilon",
+                )
+            if isinstance(view.get("price_chart"), pd.DataFrame) and not view["price_chart"].empty:
+                price_df = view["price_chart"]
+                price_y: str | list[str] = "price"
+                if "Fair price (H₀)" in price_df.columns:
+                    price_y = ["price", "Fair price (H₀)"]
+                    if "Fair + perturbation (ε)" in price_df.columns:
+                        price_y.append("Fair + perturbation (ε)")
+                chart_renderer.render_time_series(
+                    price_df,
+                    x="time",
+                    y=price_y,
+                    title=f"Price ({settings.currency}) — test period",
+                    chart_key=f"{chart_key}-price",
+                )
+                if "Fair price (H₀)" in price_df.columns:
+                    st.caption(
+                        "Orange dashed: H₀ fair price. Blue dotted: fair shifted by ε in log-price units "
+                        "(fair × e^(ε·σ)) — where ε &lt; 0 sits below fair (buy zone)."
+                    )
+            if isinstance(view.get("pnl_curve"), pd.DataFrame) and not view["pnl_curve"].empty:
+                st.subheader("Realized vs unrealized PnL")
+                chart_renderer.render_pnl_with_trades(view["pnl_curve"], chart_key=f"{chart_key}-pnl")
+                traded = view["pnl_curve"]
+                if {"shares_bought", "shares_sold"}.issubset(traded.columns):
+                    total_bought = float(traded["shares_bought"].sum())
+                    total_sold = float(traded["shares_sold"].sum())
+                    st.caption(
+                        f"Test period: **{total_bought:,.0f}** shares bought, **{total_sold:,.0f}** shares sold "
+                        f"(bars on secondary axis)."
+                    )
+            if isinstance(view.get("equity_curve"), pd.DataFrame) and not view["equity_curve"].empty:
+                chart_renderer.render_time_series(
+                    view["equity_curve"],
+                    x="time",
+                    y="portfolio_eur",
+                    title="Portfolio value over test period",
+                    chart_key=f"{chart_key}-equity",
+                )
 
 with tab_trade:
     st.subheader(f"Trade — {params.symbol}")
