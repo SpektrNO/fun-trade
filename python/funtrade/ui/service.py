@@ -40,6 +40,7 @@ from funtrade.models.perturbation import (
     trend_signal_kwargs,
 )
 from funtrade.paper.runner import run_paper_once
+from funtrade.ui.plotting.data import build_momentum_price_overlay
 
 CHART_WINDOW_RECENT = "recent_120"
 CHART_WINDOW_BACKTEST_TEST = "backtest_test"
@@ -692,22 +693,22 @@ def momentum_trade_context(
     window: str = CHART_WINDOW_RECENT,
     current_position: float = 0.0,
 ) -> dict:
-    """Latest momentum benchmark features + MA chart for the Trade tab."""
+    """Latest momentum benchmark features for the Trade tab."""
     settings = settings or Settings.from_env().for_symbol(symbol)
     if settings.universe is None:
-        return {"error": "Momentum benchmark requires config.json universe", "ma_chart": pd.DataFrame()}
+        return {"error": "Momentum benchmark requires config.json universe", "price_overlay": pd.DataFrame()}
 
     config = settings.universe.momentum_benchmark
     series = compute_momentum_series(symbol, settings=settings, config=config)
     if series.empty:
-        return {"error": "No price data for momentum series", "ma_chart": pd.DataFrame()}
+        return {"error": "No price data for momentum series", "price_overlay": pd.DataFrame()}
 
     chart_series = slice_momentum_for_chart(
         series, symbol=symbol, window=window, settings=settings,
     )
     latest = chart_series.iloc[-1]
     if pd.isna(latest.get("fast_ma")) or pd.isna(latest.get("slow_ma")):
-        return {"error": "Moving averages not ready yet", "ma_chart": pd.DataFrame()}
+        return {"error": "Moving averages not ready yet", "price_overlay": pd.DataFrame()}
 
     momentum_val = float(latest["momentum"]) if not pd.isna(latest["momentum"]) else float("nan")
     signal = signal_from_momentum(
@@ -716,6 +717,9 @@ def momentum_trade_context(
         momentum=momentum_val,
         current_position=current_position,
         config=config,
+    )
+    price_overlay = build_momentum_price_overlay(
+        chart_series, slow_ma_days=config.slow_ma_days,
     )
 
     return {
@@ -732,14 +736,7 @@ def momentum_trade_context(
         "signal": signal,
         "action": _signal_action(signal),
         "as_of": chart_series.index[-1],
-        "ma_chart": pd.DataFrame(
-            {
-                "time": chart_series.index,
-                "price": chart_series["price"].values,
-                "Fast MA": chart_series["fast_ma"].values,
-                "Slow MA": chart_series["slow_ma"].values,
-            }
-        ),
+        "price_overlay": price_overlay,
     }
 
 

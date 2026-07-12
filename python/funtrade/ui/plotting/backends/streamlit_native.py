@@ -7,7 +7,12 @@ import pandas as pd
 import streamlit as st
 
 from funtrade.ui.plotting.base import ChartRenderer
-from funtrade.ui.plotting.data import normalize_chart_times, prepare_trade_chart_frames, regime_invalid_spans
+from funtrade.ui.plotting.data import (
+    normalize_chart_times,
+    prepare_trade_chart_frames,
+    price_chart_series,
+    regime_invalid_spans,
+)
 
 
 def _epsilon_figure(df: pd.DataFrame, *, epsilon_threshold: float) -> plt.Figure:
@@ -133,12 +138,14 @@ class StreamlitNativeRenderer(ChartRenderer):
         currency: str,
         trend_enable: bool = False,
         trend_gate_z: float | None = None,
+        momentum_overlay: pd.DataFrame | None = None,
     ) -> None:
         charts = prepare_trade_chart_frames(
             series,
             epsilon_threshold=epsilon_threshold,
             trend_enable=trend_enable,
             trend_gate_z=trend_gate_z,
+            momentum_overlay=momentum_overlay,
         )
         st.subheader("ε")
         st.caption(
@@ -148,7 +155,12 @@ class StreamlitNativeRenderer(ChartRenderer):
         self.render_epsilon_chart(charts["epsilon"], epsilon_threshold=epsilon_threshold, chart_key="trade-epsilon")
 
         st.subheader(f"Price ({currency})")
-        st.line_chart(charts["price"], x="time", y="price")
+        price_cols = price_chart_series(charts["price"])
+        if len(price_cols) > 1:
+            st.caption(
+                "Solid: price and moving averages. Dashed: Bollinger ±2σ bands on slow MA."
+            )
+        st.line_chart(charts["price"], x="time", y=price_cols)
 
         if "z_trend" in charts:
             st.subheader("Trend (z_trend)")

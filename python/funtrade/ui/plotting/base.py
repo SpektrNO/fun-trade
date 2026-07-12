@@ -41,8 +41,9 @@ class ChartRenderer(ABC):
         currency: str,
         trend_enable: bool = False,
         trend_gate_z: float | None = None,
+        momentum_overlay: pd.DataFrame | None = None,
     ) -> None:
-        """Trade tab: ε bands, price, and optional z_trend panels."""
+        """Trade tab: ε bands, price (+ optional MA/Bollinger overlay), and z_trend."""
 
     @abstractmethod
     def render_pnl_with_trades(self, df: pd.DataFrame, *, chart_key: str | None = None) -> None:

@@ -628,6 +628,20 @@ with tab_trade:
         except Exception as e:
             st.error(str(e))
 
+    trade_summary = get_portfolio_summary(
+        settings=params.to_settings(), paper=params.to_paper_settings(),
+    )
+    trade_pos_qty = 0.0
+    for pos in trade_summary.get("positions", []):
+        if pos["symbol"] == params.symbol:
+            trade_pos_qty = float(pos["net_qty_shares"])
+    mom_ctx = momentum_trade_context(
+        params.symbol,
+        settings=params.to_settings(),
+        window=params.epsilon_chart_window,
+        current_position=trade_pos_qty,
+    )
+
     series = perturbation_context(
         params.symbol,
         weights=params.perturbation_weights(),
@@ -649,42 +663,23 @@ with tab_trade:
             st.caption(f"H₀ for ε: **{h0['source']}** · chart: **{_chart_labels[params.epsilon_chart_window]}**")
 
         latest = chart_series.iloc[-1]
-        st.metric("ε", f"{latest['epsilon']:.3f}")
-        st.metric("Regime valid", "Yes" if latest["regime_valid"] else "No")
+        p1, p2, p3 = st.columns(3)
+        p1.metric("ε", f"{latest['epsilon']:.3f}")
+        p2.metric("Regime valid", "Yes" if latest["regime_valid"] else "No")
         if settings.trend_enable:
-            st.metric("z_trend", f"{latest.get('z_trend', 0.0):.2f}")
-
-        chart_renderer.render_trade_charts(
-            chart_series,
-            epsilon_threshold=params.epsilon_threshold,
-            currency=settings.currency,
-            trend_enable=settings.trend_enable,
-            trend_gate_z=params.trend_gate_z if params.trend_gate_sells else None,
-        )
+            p3.metric("z_trend", f"{latest.get('z_trend', 0.0):.2f}")
     else:
         st.caption("No perturbation series available for this symbol.")
+        chart_series = pd.DataFrame()
 
-    st.divider()
     st.markdown("**Momentum benchmark**")
-    trade_summary = get_portfolio_summary(
-        settings=params.to_settings(), paper=params.to_paper_settings(),
-    )
-    trade_pos_qty = 0.0
-    for pos in trade_summary.get("positions", []):
-        if pos["symbol"] == params.symbol:
-            trade_pos_qty = float(pos["net_qty_shares"])
-    mom_ctx = momentum_trade_context(
-        params.symbol,
-        settings=params.to_settings(),
-        window=params.epsilon_chart_window,
-        current_position=trade_pos_qty,
-    )
     if mom_ctx.get("error"):
         st.caption(mom_ctx["error"])
+        momentum_overlay = None
     else:
         st.caption(
             f"Fast **{mom_ctx['fast_ma_days']}d** / slow **{mom_ctx['slow_ma_days']}d** MA · "
-            f"**{mom_ctx['momentum_lookback_days']}d** momentum · chart: **{_chart_labels[params.epsilon_chart_window]}**"
+            f"**{mom_ctx['momentum_lookback_days']}d** momentum"
         )
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Fast MA", f"{mom_ctx['fast_ma']:.2f}")
@@ -692,15 +687,17 @@ with tab_trade:
         m3.metric("Momentum", f"{mom_ctx['momentum_pct']:.1f}%" if mom_ctx["momentum_pct"] is not None else "n/a")
         m4.metric("Fast > slow", "Yes" if mom_ctx["ma_bullish"] else "No")
         m5.metric("Signal", mom_ctx["action"])
-        ma_chart = mom_ctx.get("ma_chart")
-        if isinstance(ma_chart, pd.DataFrame) and not ma_chart.empty:
-            chart_renderer.render_time_series(
-                ma_chart,
-                x="time",
-                y=["price", "Fast MA", "Slow MA"],
-                title="Momentum benchmark — price and moving averages",
-                chart_key=f"trade-{params.symbol}-momentum-ma",
-            )
+        momentum_overlay = mom_ctx.get("price_overlay")
+
+    if not chart_series.empty:
+        chart_renderer.render_trade_charts(
+            chart_series,
+            epsilon_threshold=params.epsilon_threshold,
+            currency=settings.currency,
+            trend_enable=settings.trend_enable,
+            trend_gate_z=params.trend_gate_z if params.trend_gate_sells else None,
+            momentum_overlay=momentum_overlay,
+        )
 
     if st.button("Run model paper cycle"):
         results = detect_latest_perturbations(symbols=[params.symbol], settings=params.to_settings())

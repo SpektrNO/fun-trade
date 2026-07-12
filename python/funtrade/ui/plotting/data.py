@@ -49,6 +49,7 @@ def prepare_trade_chart_frames(
     epsilon_threshold: float,
     trend_enable: bool = False,
     trend_gate_z: float | None = None,
+    momentum_overlay: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Build per-panel DataFrames for trade-tab charts."""
     chart = series.reset_index().rename(columns={"index": "time"})
@@ -62,9 +63,15 @@ def prepare_trade_chart_frames(
     eps["lower"] = -epsilon_threshold
     eps["zero"] = 0.0
 
+    price = chart[["time", "price"]].copy()
+    if momentum_overlay is not None and not momentum_overlay.empty:
+        overlay = momentum_overlay.copy()
+        overlay["time"] = normalize_chart_times(overlay["time"])
+        price = price.merge(overlay.drop(columns=["price"], errors="ignore"), on="time", how="left")
+
     out: dict[str, pd.DataFrame] = {
         "epsilon": eps,
-        "price": chart[["time", "price"]].copy(),
+        "price": price,
     }
 
     if trend_enable and "z_trend" in chart.columns:
@@ -75,3 +82,41 @@ def prepare_trade_chart_frames(
         out["z_trend"] = zt
 
     return out
+
+
+def build_momentum_price_overlay(
+    momentum: pd.DataFrame,
+    *,
+    slow_ma_days: int,
+    bollinger_std: float = 2.0,
+) -> pd.DataFrame:
+    """Fast/slow MA plus Bollinger ±σ bands for the Trade price panel."""
+    if momentum.empty:
+        return pd.DataFrame()
+    min_periods = max(5, slow_ma_days // 4)
+    price = momentum["price"].astype(float)
+    std = price.rolling(slow_ma_days, min_periods=min_periods).std()
+    slow = momentum["slow_ma"].astype(float)
+    return pd.DataFrame(
+        {
+            "time": normalize_chart_times(pd.Series(momentum.index)),
+            "Fast MA": momentum["fast_ma"].astype(float).values,
+            "Slow MA": slow.values,
+            "Upper band (+2σ)": (slow + bollinger_std * std).values,
+            "Lower band (−2σ)": (slow - bollinger_std * std).values,
+        }
+    )
+
+
+def price_chart_series(df: pd.DataFrame) -> list[str]:
+    """Column order for the Trade price panel."""
+    preferred = [
+        "price",
+        "Fair price (H₀)",
+        "Fast MA",
+        "Slow MA",
+        "Upper band (+2σ)",
+        "Lower band (−2σ)",
+        "Fair + perturbation (ε)",
+    ]
+    return [col for col in preferred if col in df.columns]

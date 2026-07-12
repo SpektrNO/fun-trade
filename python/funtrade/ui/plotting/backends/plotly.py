@@ -11,7 +11,12 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from funtrade.ui.plotting.base import ChartRenderer
-from funtrade.ui.plotting.data import normalize_chart_times, prepare_trade_chart_frames, regime_invalid_spans
+from funtrade.ui.plotting.data import (
+    normalize_chart_times,
+    prepare_trade_chart_frames,
+    price_chart_series,
+    regime_invalid_spans,
+)
 
 _LAYOUT = dict(
     height=360,
@@ -48,6 +53,10 @@ def _time_series_figure(df: pd.DataFrame, *, x: str, y: str | list[str], title: 
         "price": dict(line=dict(color="#2c3e50", width=2)),
         "Fair price (H₀)": dict(line=dict(color="#e67e22", dash="dash", width=1.5)),
         "Fair + perturbation (ε)": dict(line=dict(color="#3498db", dash="dot", width=1.5)),
+        "Fast MA": dict(line=dict(color="#27ae60", width=1.5)),
+        "Slow MA": dict(line=dict(color="#c0392b", width=1.5)),
+        "Upper band (+2σ)": dict(line=dict(color="#95a5a6", dash="dash", width=1)),
+        "Lower band (−2σ)": dict(line=dict(color="#95a5a6", dash="dash", width=1)),
     }
     fig = go.Figure()
     for col in cols:
@@ -160,12 +169,14 @@ class PlotlyRenderer(ChartRenderer):
         currency: str,
         trend_enable: bool = False,
         trend_gate_z: float | None = None,
+        momentum_overlay: pd.DataFrame | None = None,
     ) -> None:
         charts = prepare_trade_chart_frames(
             series,
             epsilon_threshold=epsilon_threshold,
             trend_enable=trend_enable,
             trend_gate_z=trend_gate_z,
+            momentum_overlay=momentum_overlay,
         )
 
         st.subheader("ε")
@@ -176,8 +187,13 @@ class PlotlyRenderer(ChartRenderer):
         self.render_epsilon_chart(charts["epsilon"], epsilon_threshold=epsilon_threshold, chart_key="trade-epsilon")
 
         st.subheader(f"Price ({currency})")
+        price_cols = price_chart_series(charts["price"])
+        if len(price_cols) > 1:
+            st.caption(
+                "Solid: price and moving averages. Dashed: Bollinger ±2σ bands on slow MA."
+            )
         _show(
-            _time_series_figure(charts["price"], x="time", y="price", title=None),
+            _time_series_figure(charts["price"], x="time", y=price_cols, title=None),
             key=_chart_key("trade", "price"),
         )
 
