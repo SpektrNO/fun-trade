@@ -27,6 +27,8 @@ class PerturbationSnapshot:
     z_volume: float | None
     z_rel_strength: float | None
     z_trend: float | None
+    market_regime: str | None
+    selected_model: str | None
     computed_at: pd.Timestamp | None
 
 
@@ -44,12 +46,21 @@ def load_latest_perturbation_snapshots(
     query = """
         SELECT DISTINCT ON (symbol)
           time, symbol, asset_class, epsilon, magnitude, regime_valid,
-          z_return, z_volume, z_rel_strength, price, z_trend, computed_at
+          z_return, z_volume, z_rel_strength, price, z_trend,
+          market_regime, selected_model, computed_at
         FROM perturbation_daily
         WHERE symbol = ANY(%(symbols)s)
         ORDER BY symbol, time DESC
     """
     fallback_query = """
+        SELECT DISTINCT ON (symbol)
+          time, symbol, asset_class, epsilon, magnitude, regime_valid,
+          z_return, z_volume, z_rel_strength, price, z_trend, computed_at
+        FROM perturbation_daily
+        WHERE symbol = ANY(%(symbols)s)
+        ORDER BY symbol, time DESC
+    """
+    legacy_query = """
         SELECT DISTINCT ON (symbol)
           time, symbol, asset_class, epsilon, magnitude, regime_valid,
           z_return, z_volume, z_rel_strength, price, computed_at
@@ -58,14 +69,27 @@ def load_latest_perturbation_snapshots(
         ORDER BY symbol, time DESC
     """
     params = {"symbols": symbols}
+    has_z_trend = True
+    has_regime = True
     try:
         df = read_sql_df(query, params, settings=settings)
-        has_z_trend = True
     except Exception as exc:
-        if "z_trend" not in str(exc).lower():
+        msg = str(exc).lower()
+        if "market_regime" in msg or "selected_model" in msg:
+            has_regime = False
+            try:
+                df = read_sql_df(fallback_query, params, settings=settings)
+            except Exception as exc2:
+                if "z_trend" not in str(exc2).lower():
+                    raise
+                has_z_trend = False
+                df = read_sql_df(legacy_query, params, settings=settings)
+        elif "z_trend" in msg:
+            has_z_trend = False
+            has_regime = False
+            df = read_sql_df(legacy_query, params, settings=settings)
+        else:
             raise
-        df = read_sql_df(fallback_query, params, settings=settings)
-        has_z_trend = False
     if df.empty:
         return {}
 
@@ -84,6 +108,8 @@ def load_latest_perturbation_snapshots(
             z_volume=float(row.z_volume) if row.z_volume is not None else None,
             z_rel_strength=float(row.z_rel_strength) if row.z_rel_strength is not None else None,
             z_trend=float(row.z_trend) if has_z_trend and getattr(row, "z_trend", None) is not None else None,
+            market_regime=str(row.market_regime) if has_regime and getattr(row, "market_regime", None) else None,
+            selected_model=str(row.selected_model) if has_regime and getattr(row, "selected_model", None) else None,
             computed_at=pd.Timestamp(row.computed_at) if row.computed_at is not None else None,
         )
     return out
@@ -332,48 +358,79 @@ def upsert_perturbation_daily(
     settings = settings or Settings.from_env()
     asset_class = settings.asset_class or "etf"
     daily = normalize_daily_bars(series)
+    has_regime = "market_regime" in daily.columns and "selected_model" in daily.columns
     rows: list[tuple] = []
     for ts, row in daily.iterrows():
         t = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
-        rows.append(
-            (
-                t,
-                symbol,
-                asset_class,
-                float(row["epsilon"]),
-                float(row["magnitude"]),
-                bool(row.get("regime_valid", True)),
-                float(row["z_return"]) if pd.notna(row.get("z_return")) else None,
-                float(row["z_volume"]) if pd.notna(row.get("z_volume")) else None,
-                float(row["z_rel_strength"]) if pd.notna(row.get("z_rel_strength")) else None,
-                float(row["price"]) if pd.notna(row.get("price")) else None,
-                float(row["z_trend"]) if pd.notna(row.get("z_trend")) else None,
-            )
+        base = (
+            t,
+            symbol,
+            asset_class,
+            float(row["epsilon"]),
+            float(row["magnitude"]),
+            bool(row.get("regime_valid", True)),
+            float(row["z_return"]) if pd.notna(row.get("z_return")) else None,
+            float(row["z_volume"]) if pd.notna(row.get("z_volume")) else None,
+            float(row["z_rel_strength"]) if pd.notna(row.get("z_rel_strength")) else None,
+            float(row["price"]) if pd.notna(row.get("price")) else None,
+            float(row["z_trend"]) if pd.notna(row.get("z_trend")) else None,
         )
+        if has_regime:
+            mr = row.get("market_regime")
+            sm = row.get("selected_model")
+            rows.append(base + (str(mr) if pd.notna(mr) else None, str(sm) if pd.notna(sm) else None))
+        else:
+            rows.append(base)
 
     with get_connection(settings) as conn:
         with conn.cursor() as cur:
-            cur.executemany(
-                """
-                INSERT INTO perturbation_daily (
-                  time, symbol, asset_class, epsilon, magnitude, regime_valid,
-                  z_return, z_volume, z_rel_strength, price, z_trend, computed_at
+            if has_regime:
+                cur.executemany(
+                    """
+                    INSERT INTO perturbation_daily (
+                      time, symbol, asset_class, epsilon, magnitude, regime_valid,
+                      z_return, z_volume, z_rel_strength, price, z_trend,
+                      market_regime, selected_model, computed_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (time, symbol) DO UPDATE SET
+                      asset_class = EXCLUDED.asset_class,
+                      epsilon = EXCLUDED.epsilon,
+                      magnitude = EXCLUDED.magnitude,
+                      regime_valid = EXCLUDED.regime_valid,
+                      z_return = EXCLUDED.z_return,
+                      z_volume = EXCLUDED.z_volume,
+                      z_rel_strength = EXCLUDED.z_rel_strength,
+                      price = EXCLUDED.price,
+                      z_trend = EXCLUDED.z_trend,
+                      market_regime = EXCLUDED.market_regime,
+                      selected_model = EXCLUDED.selected_model,
+                      computed_at = NOW()
+                    """,
+                    rows,
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                ON CONFLICT (time, symbol) DO UPDATE SET
-                  asset_class = EXCLUDED.asset_class,
-                  epsilon = EXCLUDED.epsilon,
-                  magnitude = EXCLUDED.magnitude,
-                  regime_valid = EXCLUDED.regime_valid,
-                  z_return = EXCLUDED.z_return,
-                  z_volume = EXCLUDED.z_volume,
-                  z_rel_strength = EXCLUDED.z_rel_strength,
-                  price = EXCLUDED.price,
-                  z_trend = EXCLUDED.z_trend,
-                  computed_at = NOW()
-                """,
-                rows,
-            )
+            else:
+                cur.executemany(
+                    """
+                    INSERT INTO perturbation_daily (
+                      time, symbol, asset_class, epsilon, magnitude, regime_valid,
+                      z_return, z_volume, z_rel_strength, price, z_trend, computed_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (time, symbol) DO UPDATE SET
+                      asset_class = EXCLUDED.asset_class,
+                      epsilon = EXCLUDED.epsilon,
+                      magnitude = EXCLUDED.magnitude,
+                      regime_valid = EXCLUDED.regime_valid,
+                      z_return = EXCLUDED.z_return,
+                      z_volume = EXCLUDED.z_volume,
+                      z_rel_strength = EXCLUDED.z_rel_strength,
+                      price = EXCLUDED.price,
+                      z_trend = EXCLUDED.z_trend,
+                      computed_at = NOW()
+                    """,
+                    rows,
+                )
         conn.commit()
     return len(rows)
 

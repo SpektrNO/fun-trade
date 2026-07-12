@@ -1,13 +1,68 @@
 import numpy as np
 import pandas as pd
+import pytest
+from dataclasses import replace
 
+from funtrade.config import Settings
 from funtrade.models.equilibrium import (
     EquilibriumModel,
     _fit_ou_parameters,
     _fit_seasonality,
     _seasonal_values,
 )
-from funtrade.models.perturbation import signal_from_epsilon, _compute_regime_validity, _compute_z_trend
+from funtrade.models.perturbation import (
+    _Z_RETURN_CLIP,
+    _z_return_from_fair_band,
+    signal_from_epsilon,
+    _compute_regime_validity,
+    _compute_z_trend,
+)
+
+
+def test_equilibrium_residual_matches_log_price_over_fair(monkeypatch):
+    index = pd.date_range("2024-01-01", periods=5, freq="D", tz="UTC")
+    prices = pd.Series([100.0, 110.0, 90.0, 105.0, 95.0], index=index)
+    model = EquilibriumModel(
+        symbol="TEST",
+        kappa=0.1,
+        mu=0.0,
+        sigma=0.05,
+        half_life_days=10.0,
+        seasonal_coeffs={
+            "intercept": 0.0,
+            "dow_dummies": {},
+            "fourier_annual": {"K": 1, "cos": [0.0], "sin": [0.0]},
+        },
+    )
+    h0_adj = pd.Series([0.0, 0.02, -0.01, 0.0, 0.01], index=index)
+    z_trend = pd.Series([0.0, 0.05, 0.10, -0.02, 0.0], index=index)
+
+    monkeypatch.setattr(
+        "funtrade.models.equilibrium.compute_h0_fundamental_adjustment",
+        lambda *args, **kwargs: h0_adj,
+    )
+
+    settings = replace(
+        Settings.from_env(),
+        trend_enable=True,
+        trend_fair_value_weight=1.0,
+    )
+    band = model.equilibrium_band(prices, settings=settings, z_trend=z_trend)
+    log_ratio = np.log(prices.clip(lower=1e-6) / band["equilibrium"].clip(lower=1e-6))
+    np.testing.assert_allclose(band["residual"], log_ratio.values, rtol=1e-9)
+    np.testing.assert_allclose(band["residual"] / model.sigma, log_ratio.values / model.sigma)
+
+
+def test_z_return_from_fair_band_uses_two_sigma_and_clip():
+    residual = pd.Series([0.0, 0.04, -0.20, 0.30])
+    sigma = 0.01
+    z = _z_return_from_fair_band(residual, sigma)
+    # 0.04 / (2*0.01) = 2.0 at upper band edge
+    assert z.iloc[1] == pytest.approx(2.0)
+    assert z.iloc[0] == pytest.approx(0.0)
+    # -0.20 / 0.02 = -10 → clipped to -8
+    assert z.iloc[2] == -_Z_RETURN_CLIP
+    assert z.iloc[3] == _Z_RETURN_CLIP
 
 
 def test_signal_from_epsilon_mean_reversion():

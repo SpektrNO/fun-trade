@@ -4,6 +4,13 @@ from funtrade.config import Settings
 from funtrade.universe_config import load_universe_config, reset_universe_config_cache
 
 
+def test_load_universe_config_strategy_router():
+    reset_universe_config_cache()
+    cfg = load_universe_config(force_reload=True)
+    assert cfg.strategy_router.trend_z_min == 0.5
+    assert cfg.strategy_router.default_model == "perturbation"
+
+
 def test_load_universe_config_watchlist():
     reset_universe_config_cache()
     cfg = load_universe_config(force_reload=True)

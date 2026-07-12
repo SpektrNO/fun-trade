@@ -36,6 +36,63 @@ def test_recommendation_signal_blocked_by_regime():
     assert note == "Buy blocked (regime)"
 
 
+def test_auto_recommendations_use_momentum_when_trending(monkeypatch):
+    from funtrade.ui import service as svc
+
+    pert = pd.DataFrame(
+        [
+            {
+                "symbol": "VWCE.DE",
+                "asset_class": "etf",
+                "as_of": "2026-07-10",
+                "price": 100.0,
+                "epsilon": -0.5,
+                "threshold": 0.75,
+                "regime_valid": True,
+                "z_trend": 0.8,
+                "market_regime": "trending",
+                "selected_model": "momentum_benchmark",
+                "position_shares": 0.0,
+                "position_assumed": False,
+                "signal": 1,
+                "action": "BUY",
+                "note": "Mean-reversion buy",
+            }
+        ]
+    )
+    pert.attrs["model"] = svc.MODEL_PERTURBATION
+    mom = pd.DataFrame(
+        [
+            {
+                "symbol": "VWCE.DE",
+                "asset_class": "etf",
+                "as_of": "2026-07-10",
+                "price": 100.0,
+                "fast_ma": 110.0,
+                "slow_ma": 100.0,
+                "momentum_pct": 5.0,
+                "ma_bullish": True,
+                "position_shares": 0.0,
+                "position_assumed": False,
+                "signal": 0,
+                "action": "HOLD",
+                "note": "Already long",
+            }
+        ]
+    )
+    mom.attrs["model"] = svc.MODEL_MOMENTUM_BENCHMARK
+
+    monkeypatch.setattr(svc, "_fetch_perturbation_recommendations", lambda *a, **k: pert)
+    monkeypatch.setattr(svc, "_fetch_momentum_recommendations", lambda *a, **k: mom)
+
+    from funtrade.ui.service import default_ui_params
+
+    df = svc.fetch_recommendations(default_ui_params(), model=svc.MODEL_AUTO)
+    assert df.iloc[0]["selected_model"] == svc.MODEL_MOMENTUM_BENCHMARK
+    assert df.iloc[0]["action"] == "HOLD"
+    assert df.attrs["model"] == svc.MODEL_AUTO
+
+
 def test_load_latest_perturbation_snapshots(monkeypatch):
     from funtrade.data import loader
 

@@ -286,4 +286,5 @@ See [`.env.example`](../.env.example) for database, `H0_*`, `TREND_ENABLE`, `TRE
 ## Related docs
 
 - [component-model.md](component-model.md) — H₀ / H₁ / H₂ definitions
+- [trading-guide.md](trading-guide.md) — beginner-friendly booklet: markets, strategies, models, workflow
 - [README.md](../README.md) — setup, make targets, signal rules

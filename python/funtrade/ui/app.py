@@ -25,6 +25,7 @@ from funtrade.ui.service import (
     active_equilibrium_status,
     default_ui_params,
     fetch_recommendations,
+    MODEL_AUTO,
     MODEL_MOMENTUM_BENCHMARK,
     MODEL_PERTURBATION,
     RECOMMENDATION_MODELS,
@@ -85,6 +86,7 @@ def _store_backtest_view(view: dict) -> None:
         "price_chart",
         "model_comparison_chart",
         "model_position_chart",
+        "regime_timeline_chart",
     ):
         df = stored.get(key)
         if isinstance(df, pd.DataFrame):
@@ -543,6 +545,7 @@ with tab_backtest:
             if isinstance(comp, pd.DataFrame) and not comp.empty:
                 st.subheader("Model comparison")
                 mom = view.get("momentum_benchmark") or {}
+                mixed = view.get("mixed_benchmark") or {}
                 c1, c2, c3, c4 = st.columns(4)
                 _backtest_stat(
                     c1,
@@ -558,33 +561,50 @@ with tab_backtest:
                         "Momentum net profit",
                         f"{mom.get('net_profit_eur', 0):+,.2f} ({mom.get('return_pct', 0):+.2f}%)",
                     )
-                    _backtest_stat(c3, "Momentum Sharpe", f"{mom.get('sharpe', 0):.2f}")
-                    _backtest_stat(c4, "Momentum trades", str(mom.get("total_trades", 0)))
+                if mixed.get("error"):
+                    _backtest_stat(c3, "Mixed (auto)", "—")
+                elif mixed.get("net_profit_eur") is not None:
+                    _backtest_stat(
+                        c3,
+                        "Mixed (auto) net profit",
+                        f"{mixed.get('net_profit_eur', 0):+,.2f} ({mixed.get('return_pct', 0):+.2f}%)",
+                    )
+                else:
+                    _backtest_stat(c3, "Mixed (auto)", "—")
+                _backtest_stat(c4, "Mixed Sharpe", f"{mixed.get('sharpe', 0):.2f}" if mixed.get("sharpe") is not None else "—")
                 st.caption(
-                    "Both strategies use the same test window and wallet cap. "
-                    "Momentum benchmark (`momentum_benchmark` in config.json): "
-                    "**scale** (default) adds one trade slice per bullish day and trims one slice per bearish day; "
-                    "**slice** = single entry/exit on crossover; **full** = all-in / all-out."
+                    "Same test window and wallet cap. **Mixed (auto)** routes each day via "
+                    "`strategy_router` in config.json: trending → momentum, ranging → perturbation."
                 )
+                compare_y = [c for c in comp.columns if c != "time"]
                 chart_renderer.render_time_series(
                     comp,
                     x="time",
-                    y=["Perturbation", "Momentum benchmark"],
-                    title="Perturbation vs momentum benchmark — portfolio value",
+                    y=compare_y,
+                    title="Perturbation vs momentum vs mixed (auto) — portfolio value",
                     chart_key=f"{chart_key}-model-compare",
                 )
                 pos_chart = view.get("model_position_chart")
                 if isinstance(pos_chart, pd.DataFrame) and not pos_chart.empty:
+                    pos_y = [c for c in pos_chart.columns if c != "time"]
                     chart_renderer.render_time_series(
                         pos_chart,
                         x="time",
-                        y=["Perturbation", "Momentum benchmark"],
-                        title="Perturbation vs momentum benchmark — shares held",
+                        y=pos_y,
+                        title="Model comparison — shares held",
                         chart_key=f"{chart_key}-model-position",
                     )
                     st.caption(
-                        "Exposure path over the test window — explains portfolio curves when share counts diverge. "
+                        "Exposure path over the test window. "
                         f"Max position cap: **{view.get('position_limit_shares', params.backtest_position_limit_shares):,.0f}** shares."
+                    )
+                regime_chart = view.get("regime_timeline_chart")
+                if isinstance(regime_chart, pd.DataFrame) and not regime_chart.empty:
+                    st.caption("Mixed strategy regime labels (trending / ranging / uncertain) over the test window.")
+                    st.dataframe(
+                        regime_chart.tail(30),
+                        width="stretch",
+                        hide_index=True,
                     )
                 ma_chart = mom.get("ma_chart") if isinstance(mom, dict) else None
                 if isinstance(ma_chart, pd.DataFrame) and not ma_chart.empty:
@@ -672,6 +692,7 @@ with tab_recommendations:
     _model_labels = {
         MODEL_PERTURBATION: "Perturbation (ε mean reversion)",
         MODEL_MOMENTUM_BENCHMARK: "Momentum benchmark (MA crossover)",
+        MODEL_AUTO: "Auto (regime router)",
     }
     rec_model = st.radio(
         "Model",
@@ -690,6 +711,12 @@ with tab_recommendations:
             "Reads latest **ε** and **regime_valid** from the database (last detect/refresh), "
             "then applies each asset class’s threshold — no full recompute. "
             "Use sidebar **Run refresh** to update ε. Act on **BUY** / **SELL** only."
+        )
+    elif rec_model == MODEL_AUTO:
+        st.caption(
+            "Per-symbol **regime router** (`strategy_router` in config.json): "
+            "**trending** → momentum (MA crossover); **ranging** → perturbation (ε mean-reversion). "
+            "Run **Run refresh** / `make detect` to persist regime labels."
         )
     else:
         st.caption(
@@ -752,6 +779,8 @@ with tab_recommendations:
                     "threshold": "ε thresh",
                     "regime_valid": "Regime OK",
                     "z_trend": "z_trend",
+                    "market_regime": "Regime",
+                    "selected_model": "Strategy",
                     "fast_ma": "Fast MA",
                     "slow_ma": "Slow MA",
                     "momentum_pct": "Momentum %",
@@ -765,12 +794,14 @@ with tab_recommendations:
             if rec_model == MODEL_MOMENTUM_BENCHMARK:
                 show_cols = [
                     c for c in show_cols
-                    if c not in ("ε", "ε thresh", "Regime OK", "z_trend")
+                    if c not in ("ε", "ε thresh", "Regime OK", "z_trend", "Regime", "Strategy")
                 ]
+            elif rec_model == MODEL_AUTO:
+                pass
             else:
                 show_cols = [
                     c for c in show_cols
-                    if c not in ("Fast MA", "Slow MA", "Momentum %", "Fast > slow")
+                    if c not in ("Fast MA", "Slow MA", "Momentum %", "Fast > slow", "Regime", "Strategy")
                 ]
             table = display[show_cols]
             st.dataframe(
@@ -791,7 +822,7 @@ with tab_recommendations:
             if rec.attrs.get("assume_holding_all"):
                 st.caption("*Assumed holding (not in paper wallet). Qty ≈ one trade slice (PAPER_TRADE_SLICE_PCT).")
             detected_at = rec.attrs.get("detected_at")
-            if detected_at and rec.attrs.get("model") == MODEL_PERTURBATION:
+            if detected_at and rec.attrs.get("model") in (MODEL_PERTURBATION, MODEL_AUTO):
                 st.caption(f"ε snapshot from detect run at **{detected_at}** UTC.")
             errors = rec.attrs.get("errors", [])
             if errors:

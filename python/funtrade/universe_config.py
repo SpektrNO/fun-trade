@@ -69,6 +69,16 @@ _DEFAULT_SHARE: dict[str, Any] = {
 }
 
 
+_DEFAULT_STRATEGY_ROUTER: dict[str, Any] = {
+    "trend_z_min": 0.5,
+    "range_z_max": 0.3,
+    "ma_cross_lookback_days": 90,
+    "ma_cross_max_for_range": 2,
+    "regime_min_days": 10,
+    "default_model": "perturbation",
+}
+
+
 _DEFAULT_MOMENTUM_BENCHMARK: dict[str, Any] = {
     "fast_ma_days": 50,
     "slow_ma_days": 200,
@@ -78,6 +88,22 @@ _DEFAULT_MOMENTUM_BENCHMARK: dict[str, Any] = {
     "exit_on_ma_crossunder": True,
     "position_mode": "scale",
 }
+
+
+StrategyModelName = Literal["perturbation", "momentum_benchmark"]
+MarketRegimeName = Literal["trending", "ranging", "uncertain"]
+
+
+@dataclass(frozen=True)
+class StrategyRouterConfig:
+    """Rule-based regime router: trending → momentum, ranging → perturbation."""
+
+    trend_z_min: float
+    range_z_max: float
+    ma_cross_lookback_days: int
+    ma_cross_max_for_range: int
+    regime_min_days: int
+    default_model: StrategyModelName
 
 
 @dataclass(frozen=True)
@@ -134,6 +160,7 @@ class UniverseConfig:
     benchmark: str
     currency: str
     aliases: dict[str, str]
+    strategy_router: StrategyRouterConfig
     momentum_benchmark: MomentumBenchmarkConfig
     etf: AssetClassConfig
     mutual_fund: AssetClassConfig
@@ -205,6 +232,23 @@ def _parse_asset_class(name: AssetClassName, raw: dict[str, Any] | None, default
     )
 
 
+def _parse_strategy_router(raw: dict[str, Any] | None) -> StrategyRouterConfig:
+    data = {**_DEFAULT_STRATEGY_ROUTER, **(raw or {})}
+    default_model = str(data["default_model"]).strip().lower()
+    if default_model not in ("perturbation", "momentum_benchmark"):
+        raise ValueError(
+            f"strategy_router.default_model must be perturbation or momentum_benchmark (got {default_model!r})"
+        )
+    return StrategyRouterConfig(
+        trend_z_min=float(data["trend_z_min"]),
+        range_z_max=float(data["range_z_max"]),
+        ma_cross_lookback_days=int(data["ma_cross_lookback_days"]),
+        ma_cross_max_for_range=int(data["ma_cross_max_for_range"]),
+        regime_min_days=int(data["regime_min_days"]),
+        default_model=default_model,  # type: ignore[arg-type]
+    )
+
+
 def _parse_momentum_benchmark(raw: dict[str, Any] | None) -> MomentumBenchmarkConfig:
     data = {**_DEFAULT_MOMENTUM_BENCHMARK, **(raw or {})}
     return MomentumBenchmarkConfig(
@@ -250,6 +294,7 @@ def load_universe_config(*, force_reload: bool = False) -> UniverseConfig:
         benchmark=benchmark,
         currency=currency,
         aliases=aliases,
+        strategy_router=_parse_strategy_router(payload.get("strategy_router")),
         momentum_benchmark=_parse_momentum_benchmark(payload.get("momentum_benchmark")),
         etf=_parse_asset_class("etf", payload.get("etf"), _DEFAULT_ETF),
         mutual_fund=_parse_asset_class("mutual_fund", payload.get("mutual_fund"), _DEFAULT_MUTUAL_FUND),

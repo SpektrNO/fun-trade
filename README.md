@@ -69,7 +69,7 @@ flowchart LR
 - **ε (fast perturbation)** — weighted z-scores: mainly **price vs band** (`z_return`), plus volume, relative strength vs sector ETF, vol spike. Macro mostly moves **H₀**; ε is “how far price has moved from that band today.”
 - **H₂ (optional)** — trend dampening on ε and sell gates in uptrends (`TREND_ENABLE` in `.env`).
 
-Formal component list: [docs/component-model.md](docs/component-model.md). Strategy presets: [docs/tuning-guide.md](docs/tuning-guide.md).
+Formal component list: [docs/component-model.md](docs/component-model.md). Strategy presets: [docs/tuning-guide.md](docs/tuning-guide.md). **Learning guide:** [docs/trading-guide.md](docs/trading-guide.md).
 
 ### What it is not
 

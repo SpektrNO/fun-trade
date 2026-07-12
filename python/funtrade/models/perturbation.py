@@ -13,6 +13,18 @@ from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars, save_perturb
 from funtrade.models.components import DEFAULT_H1_WEIGHTS, sector_etf_for
 from funtrade.models.equilibrium import EquilibriumModel, load_or_calibrate
 
+# H₀ equilibrium band is ±2σ in log-price space. Express fair-distance in those
+# units (±1 = at the band edge) before blending ε. Clip extremes when macro/trend
+# fair moves gap price from fair — otherwise |ε| and regime_valid blow up.
+_BAND_SIGMA_MULT = 2.0
+_Z_RETURN_CLIP = 8.0
+
+
+def _z_return_from_fair_band(residual: pd.Series, sigma: float) -> pd.Series:
+    """log(price/fair) normalized to band σ, clipped for stable ε magnitude."""
+    band_z = residual / (_BAND_SIGMA_MULT * float(sigma))
+    return band_z.clip(-_Z_RETURN_CLIP, _Z_RETURN_CLIP)
+
 
 @dataclass
 class PerturbationResult:
@@ -88,7 +100,7 @@ def compute_perturbation_series(
         )
 
     band = equilibrium.equilibrium_band(price, symbol=symbol, settings=settings, z_trend=z_trend)
-    z_return = band["residual"] / equilibrium.sigma
+    z_return = _z_return_from_fair_band(band["residual"], equilibrium.sigma)
 
     volume = df["volume"].astype(float) if "volume" in df.columns else pd.Series(0.0, index=df.index)
     if volume.notna().sum() > 5:
@@ -218,6 +230,8 @@ def detect_latest_perturbations(
     settings: Settings | None = None,
     persist: bool = True,
 ) -> list[PerturbationResult]:
+    from funtrade.models.regime_router import compute_regime_series
+
     settings = settings or Settings.from_env()
     symbols = symbols or settings.watchlist
     results: list[PerturbationResult] = []
@@ -232,6 +246,12 @@ def detect_latest_perturbations(
             )
             if series.empty:
                 continue
+
+            regime_df = compute_regime_series(
+                symbol, settings=sym_settings, perturbation=series,
+            )
+            if not regime_df.empty:
+                series = series.join(regime_df[["market_regime", "selected_model"]], how="left")
 
             latest = series.iloc[-1]
             ts = series.index[-1]
@@ -256,6 +276,8 @@ def detect_latest_perturbations(
                     "z_rel_strength": float(latest["z_rel_strength"]),
                     "z_vol": float(latest["z_vol"]),
                     "z_trend": float(latest.get("z_trend", 0.0)),
+                    "market_regime": str(latest.get("market_regime", "")) or None,
+                    "selected_model": str(latest.get("selected_model", "")) or None,
                     "price": float(latest["price"]),
                     "h1": {
                         k.replace("h1_", ""): float(latest[k])

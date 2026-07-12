@@ -20,6 +20,11 @@ from funtrade.models.momentum import (
     momentum_trade_qty,
     signal_from_momentum,
 )
+from funtrade.models.regime_router import (
+    MODEL_MOMENTUM_BENCHMARK,
+    MODEL_PERTURBATION,
+    compute_regime_series,
+)
 from funtrade.models.perturbation import compute_perturbation_series, signal_from_epsilon, trend_signal_kwargs
 from funtrade.universe_config import MomentumBenchmarkConfig
 
@@ -130,6 +135,26 @@ class MomentumBacktestResult:
     trade_signal: pd.Series
     position_shares: pd.Series
     trade_volume_shares: pd.Series
+    metrics: dict
+    test_start: pd.Timestamp | None = None
+
+
+@dataclass
+class MixedBacktestResult:
+    symbol: str
+    sharpe: float
+    max_drawdown: float
+    hit_rate: float
+    total_trades: int
+    total_return: float
+    equity_curve: pd.Series
+    price: pd.Series
+    position_shares: pd.Series
+    trade_volume_shares: pd.Series
+    market_regime: pd.Series
+    selected_model: pd.Series
+    model_signal: pd.Series
+    trade_signal: pd.Series
     metrics: dict
     test_start: pd.Timestamp | None = None
 
@@ -648,6 +673,228 @@ def run_momentum_backtest(
         trade_signal=signals,
         position_shares=positions,
         trade_volume_shares=trade_volumes,
+        metrics=full_metrics,
+        test_start=test_start,
+    )
+
+
+def run_mixed_backtest(
+    symbol: str,
+    *,
+    test_start: pd.Timestamp | None = None,
+    epsilon_threshold: float | None = None,
+    weights: tuple[float, float, float] | None = None,
+    fee_bps: float | None = None,
+    position_limit_shares: float | None = None,
+    trade_shares: float | None = None,
+    trade_slice_pct: float | None = None,
+    initial_cash_eur: float | None = None,
+    settings: Settings | None = None,
+    momentum_config: MomentumBenchmarkConfig | None = None,
+    h0_source: str = H0_SOURCE_WALK_FORWARD,
+) -> MixedBacktestResult:
+    """Walk-forward backtest routing each day to perturbation or momentum by regime."""
+    if settings is None:
+        settings = Settings.from_env().for_symbol(symbol)
+    if settings.universe is None:
+        raise ValueError("Mixed backtest requires config.json universe")
+    if epsilon_threshold is None:
+        epsilon_threshold = settings.epsilon_threshold
+    if weights is None:
+        weights = settings.perturbation_weights()
+    if momentum_config is None:
+        momentum_config = settings.universe.momentum_benchmark
+
+    all_data = load_price_bars(symbol, MARKET_ADJ_CLOSE, settings=settings)
+    if all_data.empty or len(all_data) < momentum_config.slow_ma_days + 10:
+        raise ValueError(f"Insufficient data for mixed backtest on {symbol}")
+
+    _, default_test_start = backtest_train_test_split(all_data.index)
+    if test_start is None:
+        test_start = default_test_start
+
+    equilibrium = resolve_h0_equilibrium(
+        symbol,
+        h0_source=h0_source,
+        all_data=all_data,
+        settings=settings,
+    )
+    pert_series = compute_perturbation_series(
+        symbol, weights=weights, equilibrium=equilibrium, settings=settings,
+    )
+    mom_series = compute_momentum_series(symbol, settings=settings, config=momentum_config)
+    if pert_series.empty or mom_series.empty:
+        raise ValueError(f"No series for mixed backtest on {symbol}")
+
+    regime_df = compute_regime_series(
+        symbol, settings=settings, perturbation=pert_series, momentum=mom_series,
+    )
+    pert_test = _daily_last_bars(pert_series[pert_series.index >= test_start].copy())
+    mom_test = _daily_last_bars(mom_series[mom_series.index >= test_start].copy())
+    regime_test = regime_df.reindex(pert_test.index).ffill()
+    if pert_test.empty:
+        raise ValueError(f"No test-period data after {test_start}")
+
+    price = pert_test["price"].astype(float)
+    wallet = _backtest_wallet_config()
+    if fee_bps is not None:
+        wallet = replace(wallet, fee_bps=fee_bps)
+    if position_limit_shares is not None:
+        wallet = replace(wallet, position_limit_shares=position_limit_shares)
+    if trade_slice_pct is not None:
+        wallet = replace(wallet, trade_slice_pct=trade_slice_pct)
+    if initial_cash_eur is not None:
+        wallet = replace(wallet, initial_cash=initial_cash_eur)
+    initial_cash = wallet.initial_cash
+    fixed_qty = trade_shares
+
+    signals = pd.Series(0, index=pert_test.index, dtype=int)
+    model_signals = pd.Series(0, index=pert_test.index, dtype=int)
+    positions = pd.Series(0.0, index=pert_test.index, dtype=float)
+    portfolio_value = pd.Series(initial_cash, index=pert_test.index, dtype=float)
+    trade_volumes = pd.Series(0.0, index=pert_test.index, dtype=float)
+    market_regime = regime_test["market_regime"].astype(str)
+    selected_model = regime_test["selected_model"].astype(str)
+
+    cash = initial_cash
+    position = 0.0
+    avg_cost = 0.0
+    realized_pnl = 0.0
+    total_fees = 0.0
+
+    for i, (ts, row) in enumerate(pert_test.iterrows()):
+        bar_price = float(price.iloc[i])
+        active = str(selected_model.iloc[i])
+        mom_row = mom_test.loc[ts] if ts in mom_test.index else None
+        traded = 0.0
+        raw = 0
+
+        if active == MODEL_MOMENTUM_BENCHMARK and mom_row is not None:
+            raw = momentum_backtest_signal(
+                fast_ma=float(mom_row["fast_ma"]),
+                slow_ma=float(mom_row["slow_ma"]),
+                momentum=float(mom_row["momentum"]) if not pd.isna(mom_row["momentum"]) else float("nan"),
+                current_position=position,
+                config=momentum_config,
+            )
+            model_signals.iloc[i] = raw
+            exec_signal = raw
+            if exec_signal > 0 and position >= wallet.position_limit_shares - 1e-9:
+                exec_signal = 0
+            elif exec_signal < 0 and position <= 0:
+                exec_signal = 0
+            if exec_signal != 0:
+                side = "buy" if exec_signal > 0 else "sell"
+                delta = momentum_trade_qty(
+                    side=side,
+                    price=bar_price,
+                    cash_eur=cash,
+                    net_qty=position,
+                    paper=wallet,
+                    config=momentum_config,
+                    qty_shares=fixed_qty,
+                )
+                if delta > 0:
+                    if exec_signal > 0:
+                        cost = delta * bar_price
+                        fee = cost * _fee_rate(wallet.fee_bps)
+                        position, avg_cost, realized_delta = _position_after_trade(
+                            position, avg_cost, "buy", delta, bar_price,
+                        )
+                        realized_pnl += realized_delta
+                        cash -= cost + fee
+                        total_fees += fee
+                    else:
+                        proceeds = delta * bar_price
+                        fee = proceeds * _fee_rate(wallet.fee_bps)
+                        position, avg_cost, realized_delta = _position_after_trade(
+                            position, avg_cost, "sell", delta, bar_price,
+                        )
+                        realized_pnl += realized_delta
+                        cash += proceeds - fee
+                        total_fees += fee
+                    signals.iloc[i] = exec_signal
+                    traded = delta
+        else:
+            raw = signal_from_epsilon(
+                float(row["epsilon"]),
+                epsilon_threshold,
+                bool(row["regime_valid"]),
+                long_only=True,
+                current_position=position,
+                **trend_signal_kwargs(settings, float(row.get("z_trend", 0.0))),
+            )
+            model_signals.iloc[i] = raw
+            if raw != 0:
+                side = "buy" if raw > 0 else "sell"
+                delta = compute_trade_qty(
+                    side=side,
+                    price=bar_price,
+                    cash_eur=cash,
+                    net_qty=position,
+                    paper=wallet,
+                    epsilon=float(row["epsilon"]),
+                    epsilon_threshold=epsilon_threshold,
+                    qty_shares=fixed_qty,
+                )
+                if delta > 0:
+                    if raw > 0:
+                        cost = delta * bar_price
+                        fee = cost * _fee_rate(wallet.fee_bps)
+                        position, avg_cost, realized_delta = _position_after_trade(
+                            position, avg_cost, "buy", delta, bar_price,
+                        )
+                        realized_pnl += realized_delta
+                        cash -= cost + fee
+                        total_fees += fee
+                    else:
+                        proceeds = delta * bar_price
+                        fee = proceeds * _fee_rate(wallet.fee_bps)
+                        position, avg_cost, realized_delta = _position_after_trade(
+                            position, avg_cost, "sell", delta, bar_price,
+                        )
+                        realized_pnl += realized_delta
+                        cash += proceeds - fee
+                        total_fees += fee
+                    signals.iloc[i] = raw
+                    traded = delta
+
+        positions.iloc[i] = position
+        trade_volumes.iloc[i] = traded
+        portfolio_value.iloc[i] = cash + position * bar_price
+
+    metrics = _compute_portfolio_metrics(
+        portfolio_value,
+        trade_volumes,
+        initial_capital=initial_cash,
+    )
+    full_metrics = {
+        **metrics,
+        "fee_bps": wallet.fee_bps,
+        "position_limit_shares": wallet.position_limit_shares,
+        "trade_slice_pct": wallet.trade_slice_pct,
+        "total_traded_shares": float(trade_volumes.sum()),
+        "total_fees_eur": total_fees,
+        "realized_pnl_eur": realized_pnl,
+        "final_cash_eur": cash,
+        "final_shares": float(positions.iloc[-1]),
+    }
+
+    return MixedBacktestResult(
+        symbol=symbol,
+        sharpe=metrics["sharpe"],
+        max_drawdown=metrics["max_drawdown"],
+        hit_rate=metrics["hit_rate"],
+        total_trades=metrics["total_trades"],
+        total_return=metrics["total_return"],
+        equity_curve=portfolio_value,
+        price=price,
+        position_shares=positions,
+        trade_volume_shares=trade_volumes,
+        market_regime=market_regime,
+        selected_model=selected_model,
+        model_signal=model_signals,
+        trade_signal=signals,
         metrics=full_metrics,
         test_start=test_start,
     )

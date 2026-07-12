@@ -106,13 +106,15 @@ class EquilibriumModel:
         log_mean = season + self.mu + h0_adj + trend_adj
         upper = np.exp(log_mean + 2 * self.sigma)
         lower = np.exp(log_mean - 2 * self.sigma)
+        # Log-distance from fair (H₀) — used as z_return input so ε matches the chart band.
+        residual = x - self.mu - h0_adj - trend_adj
         return pd.DataFrame(
             {
                 "price": prices,
                 "equilibrium": np.exp(log_mean),
                 "upper": upper,
                 "lower": lower,
-                "residual": x - self.mu,
+                "residual": residual,
             },
             index=prices.index,
         )

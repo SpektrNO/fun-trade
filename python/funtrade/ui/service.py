@@ -14,6 +14,7 @@ from funtrade.backtest.engine import (
     buy_and_hold_from_prices,
     resolve_h0_equilibrium,
     run_backtest,
+    run_mixed_backtest,
     run_momentum_backtest,
 )
 from funtrade.config import Settings
@@ -30,6 +31,7 @@ from funtrade.models.momentum import (
     detect_latest_momentum,
     signal_from_momentum,
 )
+from funtrade.models.regime_router import classify_latest_regime
 from funtrade.models.perturbation import (
     compute_perturbation_series,
     detect_latest_perturbations,
@@ -43,7 +45,8 @@ CHART_WINDOW_BACKTEST_TEST = "backtest_test"
 
 MODEL_PERTURBATION = "perturbation"
 MODEL_MOMENTUM_BENCHMARK = "momentum_benchmark"
-RECOMMENDATION_MODELS = (MODEL_PERTURBATION, MODEL_MOMENTUM_BENCHMARK)
+MODEL_AUTO = "auto"
+RECOMMENDATION_MODELS = (MODEL_PERTURBATION, MODEL_MOMENTUM_BENCHMARK, MODEL_AUTO)
 
 
 def backtest_params_fingerprint(params: UiParams) -> str:
@@ -203,6 +206,8 @@ def fetch_recommendations(
     """Latest model hints for every symbol in config.json (Nordnet manual trading)."""
     if model == MODEL_MOMENTUM_BENCHMARK:
         return _fetch_momentum_recommendations(params, assume_holding_all=assume_holding_all)
+    if model == MODEL_AUTO:
+        return _fetch_auto_recommendations(params, assume_holding_all=assume_holding_all)
     return _fetch_perturbation_recommendations(params, assume_holding_all=assume_holding_all)
 
 
@@ -277,6 +282,8 @@ def _fetch_perturbation_recommendations(
                 "threshold": threshold,
                 "regime_valid": p.regime_valid,
                 "z_trend": round(z_trend, 2) if sym_settings.trend_enable else None,
+                "market_regime": p.market_regime,
+                "selected_model": p.selected_model,
                 "position_shares": pos_qty,
                 "position_assumed": pos_assumed,
                 "signal": sig,
@@ -392,6 +399,102 @@ def _fetch_momentum_recommendations(
         df.attrs["errors"] = errors
     df.attrs["assume_holding_all"] = assume_holding_all
     df.attrs["model"] = MODEL_MOMENTUM_BENCHMARK
+    return df
+
+
+def _regime_note(market_regime: str, selected_model: str) -> str:
+    if selected_model == MODEL_MOMENTUM_BENCHMARK:
+        return f"Regime **{market_regime}** → momentum (trend-following)"
+    return f"Regime **{market_regime}** → perturbation (mean-reversion)"
+
+
+def _fetch_auto_recommendations(
+    params: UiParams,
+    *,
+    assume_holding_all: bool = False,
+) -> pd.DataFrame:
+    """Route each symbol to perturbation or momentum by latest market regime."""
+    pert_df = _fetch_perturbation_recommendations(params, assume_holding_all=assume_holding_all)
+    mom_df = _fetch_momentum_recommendations(params, assume_holding_all=assume_holding_all)
+    if pert_df.empty:
+        return pert_df
+
+    pert_by = {str(r["symbol"]): r for _, r in pert_df.iterrows()}
+    mom_by = {str(r["symbol"]): r for _, r in mom_df.iterrows()} if not mom_df.empty else {}
+    base = Settings.from_env()
+    config = base.universe.momentum_benchmark if base.universe else None
+
+    rows: list[dict] = []
+    for symbol in pert_df["symbol"]:
+        p = pert_by[symbol]
+        m = mom_by.get(symbol)
+        sym_settings = settings_for_symbol(params, symbol)
+
+        market_regime = p.get("market_regime")
+        selected = p.get("selected_model")
+        if not market_regime or not selected:
+            market_regime, selected = classify_latest_regime(symbol, settings=sym_settings)
+
+        pos_qty = float(p.get("position_shares") or 0.0)
+        price = p.get("price")
+        threshold = p.get("threshold")
+
+        if selected == MODEL_MOMENTUM_BENCHMARK and m is not None and m.get("signal") is not None:
+            sig = int(m["signal"])
+            mom_val = float("nan")
+            if m.get("momentum_pct") is not None:
+                mom_val = float(m["momentum_pct"]) / 100.0
+            note = _momentum_recommendation_note(
+                signal=sig,
+                price=float(m.get("price") or 0.0),
+                fast_ma=float(m.get("fast_ma") or 0.0),
+                slow_ma=float(m.get("slow_ma") or 0.0),
+                ma_bullish=bool(m.get("ma_bullish")),
+                momentum=mom_val,
+                config=config,
+                position_shares=pos_qty,
+            )
+            alt_note = ""
+            if p.get("signal") is not None and int(p["signal"]) != sig:
+                alt_note = f" (perturbation would: {_signal_action(int(p['signal']))})"
+            rows.append(
+                {
+                    **p,
+                    "market_regime": market_regime,
+                    "selected_model": MODEL_MOMENTUM_BENCHMARK,
+                    "signal": sig,
+                    "action": _signal_action(sig),
+                    "fast_ma": m.get("fast_ma"),
+                    "slow_ma": m.get("slow_ma"),
+                    "momentum_pct": m.get("momentum_pct"),
+                    "ma_bullish": m.get("ma_bullish"),
+                    "note": _regime_note(str(market_regime), MODEL_MOMENTUM_BENCHMARK) + " — " + note + alt_note,
+                }
+            )
+        else:
+            sig = int(p["signal"]) if p.get("signal") is not None else 0
+            note = p.get("note") or ""
+            alt_note = ""
+            if m is not None and m.get("signal") is not None and int(m["signal"]) != sig:
+                alt_note = f" (momentum would: {_signal_action(int(m['signal']))})"
+            rows.append(
+                {
+                    **p,
+                    "market_regime": market_regime,
+                    "selected_model": MODEL_PERTURBATION,
+                    "signal": sig,
+                    "action": _signal_action(sig),
+                    "note": _regime_note(str(market_regime), MODEL_PERTURBATION) + " — " + str(note) + alt_note,
+                }
+            )
+
+    df = pd.DataFrame(rows)
+    if pert_df.attrs.get("errors"):
+        df.attrs["errors"] = pert_df.attrs["errors"]
+    df.attrs["assume_holding_all"] = assume_holding_all
+    df.attrs["model"] = MODEL_AUTO
+    if pert_df.attrs.get("detected_at"):
+        df.attrs["detected_at"] = pert_df.attrs["detected_at"]
     return df
 
 
@@ -667,26 +770,53 @@ def run_backtest_for_ui(params: UiParams) -> dict:
     except Exception as exc:
         momentum_error = str(exc)
 
+    mixed_result = None
+    mixed_error: str | None = None
+    try:
+        mixed_result = run_mixed_backtest(
+            params.symbol,
+            test_start=result.test_start,
+            epsilon_threshold=effective_threshold,
+            weights=params.perturbation_weights(),
+            initial_cash_eur=params.paper_initial_cash,
+            position_limit_shares=params.backtest_position_limit_shares,
+            settings=settings,
+            h0_source=params.h0_source,
+        )
+    except Exception as exc:
+        mixed_error = str(exc)
+
     model_comparison_chart = pd.DataFrame()
     model_position_chart = pd.DataFrame()
+    regime_timeline_chart = pd.DataFrame()
+    index = result.equity_curve.index
     if momentum_result is not None:
         index = momentum_result.equity_curve.index
-        pert_eq = result.equity_curve.reindex(index, method="ffill")
-        pert_pos = result.position_shares.reindex(index, method="ffill").fillna(0.0)
-        model_comparison_chart = pd.DataFrame(
+    pert_eq = result.equity_curve.reindex(index, method="ffill")
+    pert_pos = result.position_shares.reindex(index, method="ffill").fillna(0.0)
+    chart_data = {
+        "time": index,
+        "Perturbation": pert_eq.values,
+    }
+    pos_data = {
+        "time": index,
+        "Perturbation": pert_pos.values,
+    }
+    if momentum_result is not None:
+        chart_data["Momentum benchmark"] = momentum_result.equity_curve.reindex(index).values
+        pos_data["Momentum benchmark"] = momentum_result.position_shares.reindex(index).fillna(0.0).values
+    if mixed_result is not None:
+        chart_data["Mixed (auto)"] = mixed_result.equity_curve.reindex(index).values
+        pos_data["Mixed (auto)"] = mixed_result.position_shares.reindex(index).fillna(0.0).values
+        regime_timeline_chart = pd.DataFrame(
             {
-                "time": index,
-                "Perturbation": pert_eq.values,
-                "Momentum benchmark": momentum_result.equity_curve.values,
+                "time": mixed_result.market_regime.index,
+                "market_regime": mixed_result.market_regime.values,
+                "selected_model": mixed_result.selected_model.values,
             }
         )
-        model_position_chart = pd.DataFrame(
-            {
-                "time": index,
-                "Perturbation": pert_pos.values,
-                "Momentum benchmark": momentum_result.position_shares.reindex(index).fillna(0.0).values,
-            }
-        )
+    model_comparison_chart = pd.DataFrame(chart_data)
+    model_position_chart = pd.DataFrame(pos_data)
 
     momentum_view: dict = {"error": momentum_error}
     if momentum_result is not None:
@@ -791,6 +921,14 @@ def run_backtest_for_ui(params: UiParams) -> dict:
         ).copy(),
         "model_comparison_chart": model_comparison_chart,
         "model_position_chart": model_position_chart,
+        "regime_timeline_chart": regime_timeline_chart,
+        "mixed_benchmark": {
+            "error": mixed_error,
+            "sharpe": mixed_result.sharpe if mixed_result else None,
+            "total_trades": mixed_result.total_trades if mixed_result else None,
+            "net_profit_eur": mixed_result.metrics.get("net_profit_eur") if mixed_result else None,
+            "return_pct": mixed_result.metrics.get("return_pct") if mixed_result else None,
+        },
         "momentum_benchmark": momentum_view,
     }
 

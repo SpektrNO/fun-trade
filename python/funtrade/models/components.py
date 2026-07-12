@@ -80,7 +80,7 @@ H1_COMPONENTS: tuple[ComponentVariable, ...] = (
         "z_return",
         "Return vs Equilibrium",
         ComponentRole.H1,
-        "OU residual normalized by sigma.",
+        "Log-distance from H₀ fair in band-σ units (log(price/fair) / 2σ), clipped.",
         "z_score",
     ),
     ComponentVariable(
