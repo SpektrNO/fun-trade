@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 AssetClassName = Literal["etf", "mutual_fund", "share"]
+MomentumPositionMode = Literal["slice", "scale", "full"]
 ASSET_CLASSES: tuple[AssetClassName, ...] = ("etf", "mutual_fund", "share")
 
 
@@ -75,6 +76,7 @@ _DEFAULT_MOMENTUM_BENCHMARK: dict[str, Any] = {
     "momentum_threshold": 0.0,
     "require_momentum_for_buy": True,
     "exit_on_ma_crossunder": True,
+    "position_mode": "scale",
 }
 
 
@@ -88,6 +90,21 @@ class MomentumBenchmarkConfig:
     momentum_threshold: float
     require_momentum_for_buy: bool
     exit_on_ma_crossunder: bool
+    position_mode: MomentumPositionMode
+
+
+def _parse_momentum_position_mode(data: dict[str, Any]) -> MomentumPositionMode:
+    if "position_mode" in data:
+        mode = str(data["position_mode"]).strip().lower()
+        if mode not in ("slice", "scale", "full"):
+            raise ValueError(
+                f"momentum_benchmark.position_mode must be slice, scale, or full (got {mode!r})"
+            )
+        return mode  # type: ignore[return-value]
+    # Legacy: full_position boolean
+    if bool(data.get("full_position", False)):
+        return "full"
+    return "scale"
 
 
 @dataclass(frozen=True)
@@ -197,6 +214,7 @@ def _parse_momentum_benchmark(raw: dict[str, Any] | None) -> MomentumBenchmarkCo
         momentum_threshold=float(data["momentum_threshold"]),
         require_momentum_for_buy=bool(data["require_momentum_for_buy"]),
         exit_on_ma_crossunder=bool(data["exit_on_ma_crossunder"]),
+        position_mode=_parse_momentum_position_mode(data),
     )
 
 

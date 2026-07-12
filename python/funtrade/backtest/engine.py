@@ -14,7 +14,12 @@ from funtrade.config import Settings
 from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars, normalize_daily_bars, save_backtest_run
 from funtrade.execution.paper import PaperSettings, _fee_rate, _position_after_trade, compute_trade_qty
 from funtrade.models.equilibrium import EquilibriumModel, calibrate_equilibrium, load_or_calibrate
-from funtrade.models.momentum import compute_momentum_series, signal_from_momentum
+from funtrade.models.momentum import (
+    compute_momentum_series,
+    momentum_backtest_signal,
+    momentum_trade_qty,
+    signal_from_momentum,
+)
 from funtrade.models.perturbation import compute_perturbation_series, signal_from_epsilon, trend_signal_kwargs
 from funtrade.universe_config import MomentumBenchmarkConfig
 
@@ -548,7 +553,7 @@ def run_momentum_backtest(
 
     for i, (_ts, row) in enumerate(test.iterrows()):
         bar_price = float(price.iloc[i])
-        raw = signal_from_momentum(
+        raw = momentum_backtest_signal(
             fast_ma=float(row["fast_ma"]),
             slow_ma=float(row["slow_ma"]),
             momentum=float(row["momentum"]) if not pd.isna(row["momentum"]) else float("nan"),
@@ -557,18 +562,24 @@ def run_momentum_backtest(
         )
         model_signals.iloc[i] = raw
         traded = 0.0
-        if raw != 0:
-            side = "buy" if raw > 0 else "sell"
-            delta = compute_trade_qty(
+        exec_signal = raw
+        if exec_signal > 0 and position >= wallet.position_limit_shares - 1e-9:
+            exec_signal = 0
+        elif exec_signal < 0 and position <= 0:
+            exec_signal = 0
+        if exec_signal != 0:
+            side = "buy" if exec_signal > 0 else "sell"
+            delta = momentum_trade_qty(
                 side=side,
                 price=bar_price,
                 cash_eur=cash,
                 net_qty=position,
                 paper=wallet,
+                config=momentum_config,
                 qty_shares=fixed_qty,
             )
             if delta > 0:
-                if raw > 0:
+                if exec_signal > 0:
                     cost = delta * bar_price
                     fee = cost * _fee_rate(wallet.fee_bps)
                     position, avg_cost, realized_delta = _position_after_trade(
@@ -577,7 +588,7 @@ def run_momentum_backtest(
                     realized_pnl += realized_delta
                     cash -= cost + fee
                     total_fees += fee
-                    signals.iloc[i] = raw
+                    signals.iloc[i] = exec_signal
                     traded = delta
                 else:
                     proceeds = delta * bar_price
@@ -588,7 +599,7 @@ def run_momentum_backtest(
                     realized_pnl += realized_delta
                     cash += proceeds - fee
                     total_fees += fee
-                    signals.iloc[i] = raw
+                    signals.iloc[i] = exec_signal
                     traded = delta
         positions.iloc[i] = position
         cash_series.iloc[i] = cash
@@ -618,6 +629,7 @@ def run_momentum_backtest(
         "fast_ma_days": momentum_config.fast_ma_days,
         "slow_ma_days": momentum_config.slow_ma_days,
         "momentum_lookback_days": momentum_config.momentum_lookback_days,
+        "position_mode": momentum_config.position_mode,
     }
 
     return MomentumBacktestResult(

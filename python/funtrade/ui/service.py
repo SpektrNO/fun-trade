@@ -668,13 +668,23 @@ def run_backtest_for_ui(params: UiParams) -> dict:
         momentum_error = str(exc)
 
     model_comparison_chart = pd.DataFrame()
+    model_position_chart = pd.DataFrame()
     if momentum_result is not None:
-        pert_eq = result.equity_curve.reindex(momentum_result.equity_curve.index, method="ffill")
+        index = momentum_result.equity_curve.index
+        pert_eq = result.equity_curve.reindex(index, method="ffill")
+        pert_pos = result.position_shares.reindex(index, method="ffill").fillna(0.0)
         model_comparison_chart = pd.DataFrame(
             {
-                "time": momentum_result.equity_curve.index,
+                "time": index,
                 "Perturbation": pert_eq.values,
                 "Momentum benchmark": momentum_result.equity_curve.values,
+            }
+        )
+        model_position_chart = pd.DataFrame(
+            {
+                "time": index,
+                "Perturbation": pert_pos.values,
+                "Momentum benchmark": momentum_result.position_shares.reindex(index).fillna(0.0).values,
             }
         )
 
@@ -777,11 +787,10 @@ def run_backtest_for_ui(params: UiParams) -> dict:
             {
                 "time": result.price.index,
                 "price": result.price.astype(float).values,
-                "Fair price (H₀)": result.fair_price.astype(float).values,
-                "Fair + perturbation (ε)": result.fair_plus_perturbation.astype(float).values,
             }
         ).copy(),
         "model_comparison_chart": model_comparison_chart,
+        "model_position_chart": model_position_chart,
         "momentum_benchmark": momentum_view,
     }
 

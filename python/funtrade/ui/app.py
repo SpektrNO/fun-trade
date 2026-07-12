@@ -77,7 +77,15 @@ def _store_backtest_view(view: dict) -> None:
     st.session_state.backtest_run_id = st.session_state.get("backtest_run_id", 0) + 1
     stored = dict(view)
     stored["run_id"] = st.session_state.backtest_run_id
-    for key in ("equity_curve", "pnl_curve", "epsilon", "trade_chart", "price_chart", "model_comparison_chart"):
+    for key in (
+        "equity_curve",
+        "pnl_curve",
+        "epsilon",
+        "trade_chart",
+        "price_chart",
+        "model_comparison_chart",
+        "model_position_chart",
+    ):
         df = stored.get(key)
         if isinstance(df, pd.DataFrame):
             stored[key] = df.copy(deep=True)
@@ -504,24 +512,13 @@ with tab_backtest:
                     chart_key=f"{chart_key}-epsilon",
                 )
             if isinstance(view.get("price_chart"), pd.DataFrame) and not view["price_chart"].empty:
-                price_df = view["price_chart"]
-                price_y: str | list[str] = "price"
-                if "Fair price (H₀)" in price_df.columns:
-                    price_y = ["price", "Fair price (H₀)"]
-                    if "Fair + perturbation (ε)" in price_df.columns:
-                        price_y.append("Fair + perturbation (ε)")
                 chart_renderer.render_time_series(
-                    price_df,
+                    view["price_chart"],
                     x="time",
-                    y=price_y,
+                    y="price",
                     title=f"Price ({settings.currency}) — test period",
                     chart_key=f"{chart_key}-price",
                 )
-                if "Fair price (H₀)" in price_df.columns:
-                    st.caption(
-                        "Orange dashed: H₀ fair price. Blue dotted: fair shifted by ε in log-price units "
-                        "(fair × e^(ε·σ)) — where ε &lt; 0 sits below fair (buy zone)."
-                    )
             if isinstance(view.get("pnl_curve"), pd.DataFrame) and not view["pnl_curve"].empty:
                 st.subheader("Realized vs unrealized PnL")
                 chart_renderer.render_pnl_with_trades(view["pnl_curve"], chart_key=f"{chart_key}-pnl")
@@ -564,8 +561,10 @@ with tab_backtest:
                     _backtest_stat(c3, "Momentum Sharpe", f"{mom.get('sharpe', 0):.2f}")
                     _backtest_stat(c4, "Momentum trades", str(mom.get("total_trades", 0)))
                 st.caption(
-                    "Both strategies use the same test window, wallet size, and trade-slice rules. "
-                    "Momentum benchmark: dual MA crossover with optional momentum filter (config.json → momentum_benchmark)."
+                    "Both strategies use the same test window and wallet cap. "
+                    "Momentum benchmark (`momentum_benchmark` in config.json): "
+                    "**scale** (default) adds one trade slice per bullish day and trims one slice per bearish day; "
+                    "**slice** = single entry/exit on crossover; **full** = all-in / all-out."
                 )
                 chart_renderer.render_time_series(
                     comp,
@@ -574,6 +573,19 @@ with tab_backtest:
                     title="Perturbation vs momentum benchmark — portfolio value",
                     chart_key=f"{chart_key}-model-compare",
                 )
+                pos_chart = view.get("model_position_chart")
+                if isinstance(pos_chart, pd.DataFrame) and not pos_chart.empty:
+                    chart_renderer.render_time_series(
+                        pos_chart,
+                        x="time",
+                        y=["Perturbation", "Momentum benchmark"],
+                        title="Perturbation vs momentum benchmark — shares held",
+                        chart_key=f"{chart_key}-model-position",
+                    )
+                    st.caption(
+                        "Exposure path over the test window — explains portfolio curves when share counts diverge. "
+                        f"Max position cap: **{view.get('position_limit_shares', params.backtest_position_limit_shares):,.0f}** shares."
+                    )
                 ma_chart = mom.get("ma_chart") if isinstance(mom, dict) else None
                 if isinstance(ma_chart, pd.DataFrame) and not ma_chart.empty:
                     chart_renderer.render_time_series(

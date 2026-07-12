@@ -93,6 +93,54 @@ def _snapshot_from_series(
     )
 
 
+def momentum_regime_bullish(
+    *,
+    fast_ma: float,
+    slow_ma: float,
+    momentum: float,
+    config: MomentumBenchmarkConfig,
+) -> bool:
+    if pd.isna(fast_ma) or pd.isna(slow_ma) or fast_ma <= slow_ma:
+        return False
+    if config.require_momentum_for_buy and (
+        pd.isna(momentum) or momentum < config.momentum_threshold
+    ):
+        return False
+    return True
+
+
+def momentum_backtest_signal(
+    *,
+    fast_ma: float,
+    slow_ma: float,
+    momentum: float,
+    current_position: float,
+    config: MomentumBenchmarkConfig,
+) -> int:
+    """Daily trade intent for momentum backtest (+1 buy slice, -1 sell slice, 0 hold)."""
+    if config.position_mode == "scale":
+        if momentum_regime_bullish(
+            fast_ma=fast_ma, slow_ma=slow_ma, momentum=momentum, config=config,
+        ):
+            return 1
+        if (
+            config.exit_on_ma_crossunder
+            and current_position > 0
+            and not pd.isna(fast_ma)
+            and not pd.isna(slow_ma)
+            and fast_ma <= slow_ma
+        ):
+            return -1
+        return 0
+    return signal_from_momentum(
+        fast_ma=fast_ma,
+        slow_ma=slow_ma,
+        momentum=momentum,
+        current_position=current_position,
+        config=config,
+    )
+
+
 def signal_from_momentum(
     *,
     fast_ma: float,
@@ -118,6 +166,60 @@ def signal_from_momentum(
     if config.exit_on_ma_crossunder and current_position > 0:
         return -1
     return 0
+
+
+def momentum_trade_qty(
+    *,
+    side: str,
+    price: float,
+    cash_eur: float,
+    net_qty: float,
+    paper,
+    config: MomentumBenchmarkConfig,
+    qty_shares: float | None = None,
+) -> float:
+    """Share qty for momentum backtest by position_mode (slice / scale / full)."""
+    from funtrade.execution.paper import MIN_TRADE_EUR, _fee_rate, compute_trade_qty
+
+    if qty_shares is not None:
+        qty = qty_shares
+        if side == "sell":
+            qty = min(qty, net_qty)
+        return max(qty, 0.0)
+
+    if config.position_mode == "full":
+        if price <= 0:
+            return 0.0
+        if side == "sell":
+            return max(net_qty, 0.0)
+        fee_mult = 1.0 + _fee_rate(paper.fee_bps)
+        room = paper.position_limit_shares - net_qty
+        if room <= 0 or cash_eur <= 0:
+            return 0.0
+        max_qty = min(room, cash_eur / (price * fee_mult))
+        if max_qty * price < MIN_TRADE_EUR:
+            return 0.0
+        return max(max_qty, 0.0)
+
+    if config.position_mode == "scale":
+        return compute_trade_qty(
+            side=side,
+            price=price,
+            cash_eur=cash_eur,
+            net_qty=net_qty,
+            paper=paper,
+        )
+
+    # slice: one paper slice on entry, full exit on crossunder sell signal
+    if side == "sell":
+        return max(net_qty, 0.0)
+    return compute_trade_qty(
+        side=side,
+        price=price,
+        cash_eur=cash_eur,
+        net_qty=net_qty,
+        paper=paper,
+    )
 
 
 def detect_latest_momentum(

@@ -1,7 +1,13 @@
 import numpy as np
 import pandas as pd
+import pytest
+from pathlib import Path
 
-from funtrade.models.momentum import signal_from_momentum
+from funtrade.models.momentum import (
+    momentum_backtest_signal,
+    momentum_trade_qty,
+    signal_from_momentum,
+)
 from funtrade.universe_config import MomentumBenchmarkConfig
 
 
@@ -13,6 +19,7 @@ def _cfg(**kwargs) -> MomentumBenchmarkConfig:
         momentum_threshold=0.0,
         require_momentum_for_buy=True,
         exit_on_ma_crossunder=True,
+        position_mode="scale",
     )
     defaults.update(kwargs)
     return MomentumBenchmarkConfig(**defaults)
@@ -62,6 +69,62 @@ def test_signal_blocked_by_weak_momentum():
     assert sig == 0
 
 
+def test_scale_signal_adds_each_bullish_day():
+    cfg = _cfg(position_mode="scale")
+    assert (
+        momentum_backtest_signal(
+            fast_ma=110.0,
+            slow_ma=100.0,
+            momentum=0.05,
+            current_position=50.0,
+            config=cfg,
+        )
+        == 1
+    )
+    assert (
+        momentum_backtest_signal(
+            fast_ma=90.0,
+            slow_ma=100.0,
+            momentum=-0.02,
+            current_position=50.0,
+            config=cfg,
+        )
+        == -1
+    )
+
+
+def test_scale_trade_qty_uses_paper_slice():
+    from funtrade.execution.paper import PaperSettings
+
+    paper = PaperSettings(
+        initial_cash=10_000,
+        trade_slice_pct=0.10,
+        position_limit_shares=500,
+        fee_bps=0,
+        csv_path=Path("data/paper_trades.csv"),
+    )
+    cfg = _cfg(position_mode="scale")
+    buy_qty = momentum_trade_qty(
+        side="buy",
+        price=100.0,
+        cash_eur=10_000,
+        net_qty=0.0,
+        paper=paper,
+        config=cfg,
+    )
+    assert buy_qty == pytest.approx(10.0)  # 10% of 10k / 100
+
+    sell_qty = momentum_trade_qty(
+        side="sell",
+        price=100.0,
+        cash_eur=5_000,
+        net_qty=50.0,
+        paper=paper,
+        config=cfg,
+    )
+    assert sell_qty == pytest.approx(10.0)  # 10% slice in shares, not full exit
+
+
 def test_run_momentum_backtest_trades(monkeypatch):
     import funtrade.backtest.engine as eng
 
@@ -100,6 +163,7 @@ def test_run_momentum_backtest_trades(monkeypatch):
         momentum_threshold=0.0,
         require_momentum_for_buy=True,
         exit_on_ma_crossunder=True,
+        position_mode="scale",
     )
 
     result = eng.run_momentum_backtest(
