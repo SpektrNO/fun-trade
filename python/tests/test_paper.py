@@ -93,6 +93,14 @@ def test_compute_trade_qty_buy_capped_by_cash():
     assert qty * 100.0 * fee_mult <= 5_000.0 + 1e-6
 
 
+def test_compute_trade_qty_buy_remaining_cash_basis():
+    paper = _paper(trade_slice_pct=0.10, slice_basis="remaining_cash")
+    first = compute_trade_qty(side="buy", price=100.0, cash_eur=100_000.0, net_qty=0.0, paper=paper)
+    second = compute_trade_qty(side="buy", price=100.0, cash_eur=90_000.0, net_qty=0.0, paper=paper)
+    assert abs(first - 100.0) < 0.01  # 10% of 100k
+    assert abs(second - 90.0) < 0.01  # 10% of 90k
+
+
 def test_compute_trade_qty_buy_scales_down_when_extreme():
     paper = _paper(trade_slice_pct=0.10)
     normal = compute_trade_qty(

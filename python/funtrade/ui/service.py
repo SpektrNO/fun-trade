@@ -28,6 +28,7 @@ from funtrade.data.loader import (
 )
 from funtrade.execution.paper import PaperSettings, get_portfolio_summary, get_position_quantities
 from funtrade.models.momentum import (
+    compute_momentum_series,
     detect_latest_momentum,
     signal_from_momentum,
 )
@@ -618,14 +619,14 @@ def backtest_test_start(symbol: str, *, settings: Settings | None = None) -> pd.
     return test_start
 
 
-def slice_perturbation_for_chart(
+def _slice_series_for_chart_window(
     series: pd.DataFrame,
     *,
     symbol: str,
     window: str,
     settings: Settings | None = None,
+    recent_bars: int = 120,
 ) -> pd.DataFrame:
-    """Filter ε series for chart display (Trade tab vs backtest test window)."""
     if series.empty:
         return series
     if window == CHART_WINDOW_BACKTEST_TEST:
@@ -634,7 +635,29 @@ def slice_perturbation_for_chart(
             sliced = series[series.index >= test_start]
             if not sliced.empty:
                 return sliced
-    return series.tail(120)
+    return series.tail(recent_bars)
+
+
+def slice_perturbation_for_chart(
+    series: pd.DataFrame,
+    *,
+    symbol: str,
+    window: str,
+    settings: Settings | None = None,
+) -> pd.DataFrame:
+    """Filter ε series for chart display (Trade tab vs backtest test window)."""
+    return _slice_series_for_chart_window(series, symbol=symbol, window=window, settings=settings)
+
+
+def slice_momentum_for_chart(
+    series: pd.DataFrame,
+    *,
+    symbol: str,
+    window: str,
+    settings: Settings | None = None,
+) -> pd.DataFrame:
+    """Filter MA/momentum series for Trade tab chart window."""
+    return _slice_series_for_chart_window(series, symbol=symbol, window=window, settings=settings)
 
 
 def perturbation_context(
@@ -660,6 +683,64 @@ def perturbation_context(
     return compute_perturbation_series(
         symbol, weights=weights, settings=sym_settings, equilibrium=equilibrium,
     )
+
+
+def momentum_trade_context(
+    symbol: str,
+    *,
+    settings: Settings | None = None,
+    window: str = CHART_WINDOW_RECENT,
+    current_position: float = 0.0,
+) -> dict:
+    """Latest momentum benchmark features + MA chart for the Trade tab."""
+    settings = settings or Settings.from_env().for_symbol(symbol)
+    if settings.universe is None:
+        return {"error": "Momentum benchmark requires config.json universe", "ma_chart": pd.DataFrame()}
+
+    config = settings.universe.momentum_benchmark
+    series = compute_momentum_series(symbol, settings=settings, config=config)
+    if series.empty:
+        return {"error": "No price data for momentum series", "ma_chart": pd.DataFrame()}
+
+    chart_series = slice_momentum_for_chart(
+        series, symbol=symbol, window=window, settings=settings,
+    )
+    latest = chart_series.iloc[-1]
+    if pd.isna(latest.get("fast_ma")) or pd.isna(latest.get("slow_ma")):
+        return {"error": "Moving averages not ready yet", "ma_chart": pd.DataFrame()}
+
+    momentum_val = float(latest["momentum"]) if not pd.isna(latest["momentum"]) else float("nan")
+    signal = signal_from_momentum(
+        fast_ma=float(latest["fast_ma"]),
+        slow_ma=float(latest["slow_ma"]),
+        momentum=momentum_val,
+        current_position=current_position,
+        config=config,
+    )
+
+    return {
+        "error": None,
+        "fast_ma_days": config.fast_ma_days,
+        "slow_ma_days": config.slow_ma_days,
+        "momentum_lookback_days": config.momentum_lookback_days,
+        "fast_ma": float(latest["fast_ma"]),
+        "slow_ma": float(latest["slow_ma"]),
+        "price": float(latest["price"]),
+        "momentum": None if pd.isna(momentum_val) else momentum_val,
+        "momentum_pct": None if pd.isna(momentum_val) else momentum_val * 100.0,
+        "ma_bullish": bool(latest["ma_bullish"]),
+        "signal": signal,
+        "action": _signal_action(signal),
+        "as_of": chart_series.index[-1],
+        "ma_chart": pd.DataFrame(
+            {
+                "time": chart_series.index,
+                "price": chart_series["price"].values,
+                "Fast MA": chart_series["fast_ma"].values,
+                "Slow MA": chart_series["slow_ma"].values,
+            }
+        ),
+    }
 
 
 def watchlist_with_class(settings: Settings | None = None) -> list[tuple[str, str]]:

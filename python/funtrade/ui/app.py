@@ -25,6 +25,7 @@ from funtrade.ui.service import (
     active_equilibrium_status,
     default_ui_params,
     fetch_recommendations,
+    momentum_trade_context,
     MODEL_AUTO,
     MODEL_MOMENTUM_BENCHMARK,
     MODEL_PERTURBATION,
@@ -47,6 +48,8 @@ st.set_page_config(page_title="FunTrade Console", layout="wide")
 
 _REC_BUY_ROW = "background-color: #dcfce7; color: #166534"
 _REC_SELL_ROW = "background-color: #ffedd5; color: #c2410c"
+# ~35px per row + header — fits 25 watchlist symbols without inner scroll for typical lists.
+_RECOMMENDATIONS_TABLE_HEIGHT = 35 * 25 + 40
 
 
 def _recommendation_row_styles(row: pd.Series) -> list[str]:
@@ -631,6 +634,7 @@ with tab_trade:
         settings=params.to_settings(),
         h0_source=params.h0_source,
     )
+    st.markdown("**Perturbation (ε mean reversion)**")
     if not series.empty:
         chart_series = slice_perturbation_for_chart(
             series,
@@ -657,6 +661,46 @@ with tab_trade:
             trend_enable=settings.trend_enable,
             trend_gate_z=params.trend_gate_z if params.trend_gate_sells else None,
         )
+    else:
+        st.caption("No perturbation series available for this symbol.")
+
+    st.divider()
+    st.markdown("**Momentum benchmark**")
+    trade_summary = get_portfolio_summary(
+        settings=params.to_settings(), paper=params.to_paper_settings(),
+    )
+    trade_pos_qty = 0.0
+    for pos in trade_summary.get("positions", []):
+        if pos["symbol"] == params.symbol:
+            trade_pos_qty = float(pos["net_qty_shares"])
+    mom_ctx = momentum_trade_context(
+        params.symbol,
+        settings=params.to_settings(),
+        window=params.epsilon_chart_window,
+        current_position=trade_pos_qty,
+    )
+    if mom_ctx.get("error"):
+        st.caption(mom_ctx["error"])
+    else:
+        st.caption(
+            f"Fast **{mom_ctx['fast_ma_days']}d** / slow **{mom_ctx['slow_ma_days']}d** MA · "
+            f"**{mom_ctx['momentum_lookback_days']}d** momentum · chart: **{_chart_labels[params.epsilon_chart_window]}**"
+        )
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Fast MA", f"{mom_ctx['fast_ma']:.2f}")
+        m2.metric("Slow MA", f"{mom_ctx['slow_ma']:.2f}")
+        m3.metric("Momentum", f"{mom_ctx['momentum_pct']:.1f}%" if mom_ctx["momentum_pct"] is not None else "n/a")
+        m4.metric("Fast > slow", "Yes" if mom_ctx["ma_bullish"] else "No")
+        m5.metric("Signal", mom_ctx["action"])
+        ma_chart = mom_ctx.get("ma_chart")
+        if isinstance(ma_chart, pd.DataFrame) and not ma_chart.empty:
+            chart_renderer.render_time_series(
+                ma_chart,
+                x="time",
+                y=["price", "Fast MA", "Slow MA"],
+                title="Momentum benchmark — price and moving averages",
+                chart_key=f"trade-{params.symbol}-momentum-ma",
+            )
 
     if st.button("Run model paper cycle"):
         results = detect_latest_perturbations(symbols=[params.symbol], settings=params.to_settings())
@@ -807,6 +851,7 @@ with tab_recommendations:
             st.dataframe(
                 table.style.apply(_recommendation_row_styles, axis=1),
                 width="stretch",
+                height=_RECOMMENDATIONS_TABLE_HEIGHT,
                 hide_index=True,
                 column_config={
                     "Price": st.column_config.NumberColumn(format="%.2f"),

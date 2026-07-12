@@ -329,12 +329,13 @@ FunTrade simulates a **EUR wallet** — no broker connection in v1.
 **Sizing rules:**
 
 - Tranches → **fractional shares** (slice ÷ price)  
-- Slice based on **starting** wallet, not current NAV  
+- **Paper:** each slice is a fraction of **starting** wallet (`PAPER_TRADE_SLICE_PCT`)  
+- **Backtest:** each **buy** slice is a fraction of **remaining cash** — deploys gradually so later buy signals still fire  
 - Buys capped by **cash available**  
-- Sells are **incremental** (one slice per signal), not all-at-once  
+- Sells are **incremental** (one slice per signal), still sized from starting wallet notional  
 - When |ε| is extreme, perturbation can **scale down** slice size for smoother entry  
 
-Backtest uses the same slice logic (`BACKTEST_TRADE_SLICE_PCT`).
+Backtest uses **`remaining_cash`** slice basis (`BACKTEST_TRADE_SLICE_PCT` of cash still available per buy). Paper wallet slices remain a fraction of **starting** capital.
 
 This matches a **tactical overlay** mental model: you have a €100k core; the model suggests moving €10k at a time, not flipping the entire portfolio daily.
 

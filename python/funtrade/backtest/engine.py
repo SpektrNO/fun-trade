@@ -87,6 +87,7 @@ def _backtest_wallet_config() -> PaperSettings:
             )
         ),
         csv_path=Path(os.devnull),
+        slice_basis="remaining_cash",
     )
 
 

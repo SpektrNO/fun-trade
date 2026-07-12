@@ -273,7 +273,7 @@ Forward paper (`make paper`, UI refresh, Trade tab) simulates a **virtual EUR wa
 
 Reset: UI → **Wallet** → Reset paper portfolio. `make clean` removes the CSV only; DB state needs the UI reset.
 
-Backtest uses the same slice rules via `BACKTEST_TRADE_SLICE_PCT` (defaults to paper settings).
+Backtest uses **`remaining_cash`** slice basis: each buy deploys `BACKTEST_TRADE_SLICE_PCT` of **cash still available** (paper wallet still uses starting-wallet slices via `PAPER_TRADE_SLICE_PCT`).
 
 ## Default universe
 

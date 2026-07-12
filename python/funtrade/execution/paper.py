@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from funtrade.config import Settings, get_connection, read_sql_df
 
@@ -24,6 +25,8 @@ class PaperFill:
 
 MIN_TRADE_EUR = 1.0
 
+SliceBasis = Literal["initial", "remaining_cash"]
+
 
 @dataclass
 class PaperSettings:
@@ -32,6 +35,7 @@ class PaperSettings:
     fee_bps: float
     trade_slice_pct: float
     csv_path: Path
+    slice_basis: SliceBasis = "initial"
 
     @classmethod
     def from_env(cls) -> PaperSettings:
@@ -43,8 +47,20 @@ class PaperSettings:
             csv_path=Path(os.getenv("PAPER_CSV_PATH", "data/paper_trades.csv")),
         )
 
-    def slice_notional_eur(self) -> float:
-        """Max EUR per tranche from start wallet (initial_cash), not current NAV."""
+    def slice_notional_eur(
+        self,
+        *,
+        cash_eur: float | None = None,
+        side: str | None = None,
+    ) -> float:
+        """Max EUR per tranche.
+
+        Paper (default): fraction of starting wallet (`initial_cash`).
+        Backtest buys (`remaining_cash`): fraction of cash still available — spreads
+        deployment across the test window instead of exhausting cash early.
+        """
+        if self.slice_basis == "remaining_cash" and side == "buy" and cash_eur is not None:
+            return max(0.0, cash_eur) * self.trade_slice_pct
         return self.initial_cash * self.trade_slice_pct
 
 
@@ -72,10 +88,10 @@ def compute_trade_qty(
     epsilon_threshold: float | None = None,
     qty_shares: float | None = None,
 ) -> float:
-    """Fractional shares from a EUR slice (based on start wallet size).
+    """Fractional shares from a EUR slice.
 
-    Buy slice = min(10% of initial cash, cash still available).
-    Sell slice = 10% of initial cash in shares (partial exit), capped by position.
+    Paper: buy/sell slices are a fraction of starting wallet size.
+    Backtest (remaining_cash): buy slice is a fraction of cash still available.
     """
     if price <= 0:
         return 0.0
@@ -87,7 +103,7 @@ def compute_trade_qty(
         return max(qty, 0.0)
 
     scale = _deviation_scale(epsilon, epsilon_threshold)
-    slice_eur = paper.slice_notional_eur() * scale
+    slice_eur = paper.slice_notional_eur(cash_eur=cash_eur, side=side) * scale
 
     if side == "buy":
         if cash_eur <= 0:
