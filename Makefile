@@ -124,11 +124,10 @@ endif
 reconcile: build ## Cross-check Stooq vs EOD (needs EOD_API_TOKEN)
 	cd $(PYTHON_DIR) && $(UV) run funtrade-reconcile --symbol $(SYMBOL)
 
-refresh: build ## Recent ingest + detect + paper (REFRESH_DAYS=14, needs network)
+refresh: build ## Recent ingest + detect (REFRESH_DAYS=14, needs network)
 	$(MAKE) ingest DAYS=$(REFRESH_DAYS)
 	$(MAKE) ingest-factors DAYS=$(REFRESH_DAYS)
 	$(MAKE) detect
-	$(MAKE) paper
 
 ui: build ## Streamlit console → http://localhost:8501
 	cd $(PYTHON_DIR) && $(UV) run funtrade-ui

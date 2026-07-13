@@ -39,7 +39,6 @@ from funtrade.models.perturbation import (
     signal_from_epsilon,
     trend_signal_kwargs,
 )
-from funtrade.paper.runner import run_paper_once
 from funtrade.portfolio.allocation import PortfolioAllocationResult, compute_portfolio_allocation
 from funtrade.ui.plotting.data import build_momentum_price_overlay
 
@@ -1038,11 +1037,9 @@ def run_refresh(
     *,
     days: int = DEFAULT_REFRESH_DAYS,
     settings: Settings | None = None,
-    paper: PaperSettings | None = None,
 ) -> dict:
-    """Same pipeline as `make refresh`: ingest → factors → detect → paper."""
+    """Same pipeline as `make refresh`: ingest → factors → detect."""
     settings = settings or Settings.from_env()
-    paper = paper or PaperSettings.from_env()
     out: dict = {"days": days, "steps": {}}
 
     try:
@@ -1083,23 +1080,9 @@ def run_refresh(
                 for r in detections
             ],
         }
-    except Exception as exc:
-        out["steps"]["detect"] = {"ok": False, "error": str(exc)}
-        out["ok"] = False
-        return out
-
-    try:
-        paper_results = run_paper_once(settings=settings, paper=paper)
-        fills = sum(1 for r in paper_results if r.get("fill") is not None)
-        out["steps"]["paper"] = {
-            "ok": True,
-            "symbols": len(paper_results),
-            "fills": fills,
-            "results": paper_results,
-        }
         out["ok"] = True
     except Exception as exc:
-        out["steps"]["paper"] = {"ok": False, "error": str(exc)}
+        out["steps"]["detect"] = {"ok": False, "error": str(exc)}
         out["ok"] = False
 
     return out

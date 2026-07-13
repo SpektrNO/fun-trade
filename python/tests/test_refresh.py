@@ -1,7 +1,7 @@
 from funtrade.ui import service as svc
 
 
-def test_run_refresh_runs_all_steps(monkeypatch):
+def test_run_refresh_runs_ingest_factors_and_detect(monkeypatch):
     calls: list[str] = []
 
     monkeypatch.setattr(
@@ -19,19 +19,14 @@ def test_run_refresh_runs_all_steps(monkeypatch):
         "detect_latest_perturbations",
         lambda **kw: calls.append("detect") or [_FakeDetection()],
     )
-    monkeypatch.setattr(
-        svc,
-        "run_paper_once",
-        lambda **kw: calls.append("paper") or [{"symbol": "VWCE.DE", "fill": None}],
-    )
 
     result = svc.run_refresh(days=14)
 
-    assert calls == ["ingest", "factors", "detect", "paper"]
+    assert calls == ["ingest", "factors", "detect"]
     assert result["ok"] is True
     assert result["steps"]["ingest"]["total_rows"] == 14
     assert result["steps"]["detect"]["symbols"] == 1
-    assert result["steps"]["paper"]["fills"] == 0
+    assert "paper" not in result["steps"]
 
 
 def test_run_refresh_stops_on_ingest_failure(monkeypatch):
@@ -42,7 +37,6 @@ def test_run_refresh_stops_on_ingest_failure(monkeypatch):
     )
     monkeypatch.setattr(svc, "ingest_macro_factors", lambda **kw: {})
     monkeypatch.setattr(svc, "detect_latest_perturbations", lambda **kw: [])
-    monkeypatch.setattr(svc, "run_paper_once", lambda **kw: [])
 
     result = svc.run_refresh(days=7)
 

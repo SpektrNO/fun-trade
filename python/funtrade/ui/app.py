@@ -361,7 +361,7 @@ _refresh_days = st.sidebar.number_input(
 )
 st.session_state.refresh_days = _refresh_days
 if st.sidebar.button(
-    "Run refresh (ingest → detect → paper)",
+    "Run refresh (ingest → detect)",
     type="primary",
     help="Same as `make refresh`. Needs network; may take a few minutes.",
 ):
@@ -370,7 +370,6 @@ if st.sidebar.button(
             result = run_refresh(
                 days=_refresh_days,
                 settings=applied.to_settings(),
-                paper=applied.to_paper_settings(),
             )
             st.session_state.refresh_result = result
             st.session_state.pop("recommendations_df", None)
@@ -389,12 +388,10 @@ if "refresh_result" in st.session_state:
         _steps = _rr.get("steps", {})
         _ingest = _steps.get("ingest", {})
         _detect = _steps.get("detect", {})
-        _paper = _steps.get("paper", {})
         st.sidebar.success(
             f"Refresh done ({_rr.get('days', '?')}d): "
             f"{_ingest.get('total_rows', 0)} price rows, "
-            f"{_detect.get('symbols', 0)} ε updates, "
-            f"{_paper.get('fills', 0)} paper fills."
+            f"{_detect.get('symbols', 0)} ε updates."
         )
     else:
         st.sidebar.warning("Refresh incomplete — see step errors below.")
