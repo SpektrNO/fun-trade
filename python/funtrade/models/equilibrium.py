@@ -100,12 +100,16 @@ class EquilibriumModel:
         season = self.seasonal_component(prices.index)
         x = self.deseasonalize(prices)
         h0_adj = compute_h0_fundamental_adjustment(symbol or self.symbol, prices.index, settings=settings)
+        macro_scale = float(getattr(settings, "h0_macro_fair_scale", 1.0))
+        if macro_scale != 1.0:
+            h0_adj = h0_adj * macro_scale
         trend_adj = pd.Series(0.0, index=prices.index)
         if settings.trend_enable and settings.trend_fair_value_weight != 0.0 and z_trend is not None:
             trend_adj = settings.trend_fair_value_weight * z_trend.reindex(prices.index).fillna(0.0)
         log_mean = season + self.mu + h0_adj + trend_adj
-        upper = np.exp(log_mean + 2 * self.sigma)
-        lower = np.exp(log_mean - 2 * self.sigma)
+        band_mult = float(getattr(settings, "h0_band_sigma_mult", 2.0))
+        upper = np.exp(log_mean + band_mult * self.sigma)
+        lower = np.exp(log_mean - band_mult * self.sigma)
         # Log-distance from fair (H₀) — used as z_return input so ε matches the chart band.
         residual = x - self.mu - h0_adj - trend_adj
         return pd.DataFrame(
@@ -120,27 +124,35 @@ class EquilibriumModel:
         )
 
 
-def _fit_seasonality(log_prices: pd.Series) -> dict:
+def _fit_seasonality(log_prices: pd.Series, *, include_dow: bool = True) -> dict:
     index = log_prices.index
-    dow = index.dayofweek
     k = _annual_fourier_harmonics()
-
-    dow_dummies = pd.get_dummies(dow, prefix="d", drop_first=True)
     fourier = _annual_fourier_design(index, k)
-    X = sm.add_constant(
-        np.column_stack([dow_dummies.to_numpy(dtype=float), fourier]),
-        has_constant="add",
-    )
-    model = sm.OLS(log_prices.values.astype(float), X).fit()
-    params = model.params
 
-    intercept = float(params[0])
-    dow_coefs: dict[str, float] = {}
-    n_dow = dow_dummies.shape[1]
-    for col, coef in zip(dow_dummies.columns, params[1 : 1 + n_dow], strict=False):
-        dow_coefs[col[2:]] = float(coef)
+    if include_dow:
+        dow = index.dayofweek
+        dow_dummies = pd.get_dummies(dow, prefix="d", drop_first=True)
+        X = sm.add_constant(
+            np.column_stack([dow_dummies.to_numpy(dtype=float), fourier]),
+            has_constant="add",
+        )
+        model = sm.OLS(log_prices.values.astype(float), X).fit()
+        params = model.params
 
-    fourier_params = params[1 + n_dow :]
+        intercept = float(params[0])
+        dow_coefs: dict[str, float] = {}
+        n_dow = dow_dummies.shape[1]
+        for col, coef in zip(dow_dummies.columns, params[1 : 1 + n_dow], strict=False):
+            dow_coefs[col[2:]] = float(coef)
+        fourier_params = params[1 + n_dow :]
+    else:
+        X = sm.add_constant(fourier, has_constant="add")
+        model = sm.OLS(log_prices.values.astype(float), X).fit()
+        params = model.params
+        intercept = float(params[0])
+        dow_coefs = {}
+        fourier_params = params[1:]
+
     cos_coefs: list[float] = []
     sin_coefs: list[float] = []
     for harmonic in range(k):
@@ -152,6 +164,7 @@ def _fit_seasonality(log_prices: pd.Series) -> dict:
         "dow_dummies": dow_coefs,
         "fourier_annual": {"K": k, "cos": cos_coefs, "sin": sin_coefs},
         "seasonal_model": "fourier",
+        "seasonal_dow": include_dow,
         "r_squared": float(model.rsquared),
     }
 
@@ -188,6 +201,25 @@ def _fit_ou_parameters(
     return kappa, mu, max(sigma, 1e-6)
 
 
+def _effective_sigma(
+    sigma: float,
+    residuals: pd.Series,
+    *,
+    sigma_floor: float,
+    realized_vol_sigma_frac: float,
+) -> float:
+    """Raise σ for smooth NAV / low-vol series so z_return does not clip constantly."""
+    out = max(float(sigma), 1e-6)
+    if sigma_floor > 0:
+        out = max(out, sigma_floor)
+    if realized_vol_sigma_frac > 0:
+        diffs = residuals.diff().dropna()
+        if len(diffs) >= 20:
+            realized = float(diffs.std(ddof=1))
+            out = max(out, realized_vol_sigma_frac * realized)
+    return out
+
+
 def calibrate_equilibrium(
     symbol: str,
     *,
@@ -210,16 +242,27 @@ def calibrate_equilibrium(
     log_prices = np.log(prices.clip(lower=0.01))
     log_prices = pd.Series(log_prices.values, index=prices.index, name="log_price")
 
-    seasonal_coeffs = _fit_seasonality(log_prices)
+    seasonal_coeffs = _fit_seasonality(log_prices, include_dow=settings.h0_seasonal_dow)
     season = _seasonal_values(log_prices.index, seasonal_coeffs)
 
     residuals = pd.Series(log_prices.values - season, index=log_prices.index, name="residual")
-    kappa, mu, sigma = _fit_ou_parameters(residuals, dt_days=1.0)
+    kappa, mu, sigma = _fit_ou_parameters(
+        residuals,
+        dt_days=1.0,
+        mu_anchor_days=settings.h0_mu_anchor_days,
+    )
     half_life = np.log(2) / kappa
     if half_life > _MAX_HALF_LIFE_DAYS:
-        mu = float(residuals.tail(_MU_ANCHOR_DAYS).median())
+        mu = float(residuals.tail(settings.h0_mu_anchor_days).median())
         half_life = float(_MAX_HALF_LIFE_DAYS)
         kappa = np.log(2) / half_life
+
+    sigma = _effective_sigma(
+        sigma,
+        residuals,
+        sigma_floor=settings.h0_sigma_floor,
+        realized_vol_sigma_frac=settings.h0_realized_vol_sigma_frac,
+    )
 
     model = EquilibriumModel(
         symbol=symbol,

@@ -844,7 +844,8 @@ with tab_recommendations:
         "Assume I hold every symbol",
         value=bool(st.session_state.get("rec_assume_holding_all", False)),
         help="Treat each watchlist symbol as a long position (for your DNB portfolio). "
-        "Enables SELL / trend-gate notes when ε is high; uses one trade slice when flat.",
+        "Enables SELL / trend-gate notes when ε is high. "
+        "Momentum (scale mode): still BUY = add another slice while trend is up.",
     )
     prev_assume = st.session_state.get("rec_assume_holding_all", False)
     if assume_holding_all != prev_assume:

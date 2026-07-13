@@ -56,13 +56,21 @@ def test_equilibrium_residual_matches_log_price_over_fair(monkeypatch):
 def test_z_return_from_fair_band_uses_two_sigma_and_clip():
     residual = pd.Series([0.0, 0.04, -0.20, 0.30])
     sigma = 0.01
-    z = _z_return_from_fair_band(residual, sigma)
+    z = _z_return_from_fair_band(residual, sigma, band_sigma_mult=2.0)
     # 0.04 / (2*0.01) = 2.0 at upper band edge
     assert z.iloc[1] == pytest.approx(2.0)
     assert z.iloc[0] == pytest.approx(0.0)
     # -0.20 / 0.02 = -10 → clipped to -8
     assert z.iloc[2] == -_Z_RETURN_CLIP
     assert z.iloc[3] == _Z_RETURN_CLIP
+
+
+def test_z_return_wider_band_reduces_magnitude():
+    residual = pd.Series([-0.10])
+    sigma = 0.01
+    z2 = _z_return_from_fair_band(residual, sigma, band_sigma_mult=2.0)
+    z25 = _z_return_from_fair_band(residual, sigma, band_sigma_mult=2.5)
+    assert abs(z25.iloc[0]) == pytest.approx(abs(z2.iloc[0]) * 2.0 / 2.5)
 
 
 def test_signal_from_epsilon_mean_reversion():

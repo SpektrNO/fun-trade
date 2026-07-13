@@ -30,7 +30,7 @@ from funtrade.execution.paper import PaperSettings, get_portfolio_summary, get_p
 from funtrade.models.momentum import (
     compute_momentum_series,
     detect_latest_momentum,
-    signal_from_momentum,
+    momentum_backtest_signal,
 )
 from funtrade.models.regime_router import classify_latest_regime
 from funtrade.models.perturbation import (
@@ -363,7 +363,7 @@ def _fetch_momentum_recommendations(
         price = float(p.price)
         assumed_qty = assumed_eur / price if price > 0 else assumed_eur / 100.0
         pos_qty = paper_qty if paper_qty > 0 else (assumed_qty if assume_holding_all else 0.0)
-        sig = signal_from_momentum(
+        sig = momentum_backtest_signal(
             fast_ma=p.fast_ma,
             slow_ma=p.slow_ma,
             momentum=p.momentum,
@@ -514,16 +514,23 @@ def _momentum_recommendation_note(
 ) -> str:
     mom_pct = f"{momentum * 100:.1f}%" if not pd.isna(momentum) else "n/a"
     if signal > 0:
-        return (
+        base = (
             f"Fast MA ({fast_ma:.2f}) > slow MA ({slow_ma:.2f}); "
             f"63d momentum {mom_pct} (price {price:.2f})"
         )
+        if config.position_mode == "scale" and position_shares > 0:
+            return f"{base} — add slice"
+        if config.position_mode == "scale":
+            return f"{base} — scale in"
+        return base
     if signal < 0:
         return f"Fast MA ({fast_ma:.2f}) < slow MA ({slow_ma:.2f}) — exit long"
     if ma_bullish and config.require_momentum_for_buy:
         if pd.isna(momentum) or momentum < config.momentum_threshold:
             return f"Fast > slow, but 63d momentum {mom_pct} below threshold"
-        return "Fast > slow; already long"
+        if config.position_mode == "slice" and position_shares > 0:
+            return "Fast > slow; already long (slice mode — one entry)"
+        return "Fast > slow; hold"
     if not ma_bullish and position_shares <= 0:
         return f"Fast MA ({fast_ma:.2f}) ≤ slow MA ({slow_ma:.2f}); flat"
     return "Hold"
@@ -712,7 +719,7 @@ def momentum_trade_context(
         return {"error": "Moving averages not ready yet", "price_overlay": pd.DataFrame()}
 
     momentum_val = float(latest["momentum"]) if not pd.isna(latest["momentum"]) else float("nan")
-    signal = signal_from_momentum(
+    signal = momentum_backtest_signal(
         fast_ma=float(latest["fast_ma"]),
         slow_ma=float(latest["slow_ma"]),
         momentum=momentum_val,

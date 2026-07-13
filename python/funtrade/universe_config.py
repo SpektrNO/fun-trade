@@ -20,6 +20,12 @@ def _env_calibration_days() -> int:
 _DEFAULT_ETF: dict[str, Any] = {
     "symbols": ["EXSA.DE", "VWCE.DE", "EUNL.DE", "IS3N.DE", "SXR8.DE", "AGGH.DE", "IBCI.DE"],
     "h0_calibration_days": _env_calibration_days(),
+    "h0_sigma_floor": 0.0,
+    "h0_band_sigma_mult": 2.0,
+    "h0_seasonal_dow": True,
+    "h0_mu_anchor_days": 252,
+    "h0_macro_fair_scale": 1.0,
+    "h0_realized_vol_sigma_frac": 0.0,
     "epsilon_threshold": 0.75,
     "regime_spike_sigma": 3.0,
     "regime_consecutive_bars": 3,
@@ -37,6 +43,12 @@ _DEFAULT_ETF: dict[str, Any] = {
 _DEFAULT_MUTUAL_FUND: dict[str, Any] = {
     "symbols": [],
     "h0_calibration_days": _env_calibration_days(),
+    "h0_sigma_floor": 0.015,
+    "h0_band_sigma_mult": 2.5,
+    "h0_seasonal_dow": False,
+    "h0_mu_anchor_days": 126,
+    "h0_macro_fair_scale": 0.5,
+    "h0_realized_vol_sigma_frac": 0.75,
     "epsilon_threshold": 0.75,
     "regime_spike_sigma": 3.0,
     "regime_consecutive_bars": 3,
@@ -54,6 +66,12 @@ _DEFAULT_MUTUAL_FUND: dict[str, Any] = {
 _DEFAULT_SHARE: dict[str, Any] = {
     "symbols": [],
     "h0_calibration_days": min(_env_calibration_days(), 365),
+    "h0_sigma_floor": 0.01,
+    "h0_band_sigma_mult": 2.0,
+    "h0_seasonal_dow": True,
+    "h0_mu_anchor_days": 189,
+    "h0_macro_fair_scale": 1.0,
+    "h0_realized_vol_sigma_frac": 0.5,
     "epsilon_threshold": 0.75,
     "regime_spike_sigma": 3.5,
     "regime_consecutive_bars": 3,
@@ -150,6 +168,12 @@ class AssetClassConfig:
     trend_gate_z: float
     trend_use_benchmark: bool
     h0_calibration_days: int
+    h0_sigma_floor: float
+    h0_band_sigma_mult: float
+    h0_seasonal_dow: bool
+    h0_mu_anchor_days: int
+    h0_macro_fair_scale: float
+    h0_realized_vol_sigma_frac: float
 
     def perturbation_weights(self) -> tuple[float, float, float]:
         return (self.w_return, self.w_volume, self.w_rel_strength)
@@ -229,6 +253,14 @@ def _parse_asset_class(name: AssetClassName, raw: dict[str, Any] | None, default
         trend_gate_z=float(data["trend_gate_z"]),
         trend_use_benchmark=bool(data["trend_use_benchmark"]),
         h0_calibration_days=int(data.get("h0_calibration_days", _env_calibration_days())),
+        h0_sigma_floor=float(data.get("h0_sigma_floor", defaults.get("h0_sigma_floor", 0.0))),
+        h0_band_sigma_mult=float(data.get("h0_band_sigma_mult", defaults.get("h0_band_sigma_mult", 2.0))),
+        h0_seasonal_dow=bool(data.get("h0_seasonal_dow", defaults.get("h0_seasonal_dow", True))),
+        h0_mu_anchor_days=int(data.get("h0_mu_anchor_days", defaults.get("h0_mu_anchor_days", 252))),
+        h0_macro_fair_scale=float(data.get("h0_macro_fair_scale", defaults.get("h0_macro_fair_scale", 1.0))),
+        h0_realized_vol_sigma_frac=float(
+            data.get("h0_realized_vol_sigma_frac", defaults.get("h0_realized_vol_sigma_frac", 0.0))
+        ),
     )
 
 

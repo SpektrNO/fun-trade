@@ -125,6 +125,22 @@ def test_scale_trade_qty_uses_paper_slice():
     assert sell_qty == pytest.approx(10.0)  # 10% slice in shares, not full exit
 
 
+def test_momentum_recommendation_note_scale_add_slice():
+    from funtrade.ui.service import _momentum_recommendation_note
+
+    note = _momentum_recommendation_note(
+        signal=1,
+        price=100.0,
+        fast_ma=110.0,
+        slow_ma=100.0,
+        ma_bullish=True,
+        momentum=0.05,
+        config=_cfg(position_mode="scale"),
+        position_shares=50.0,
+    )
+    assert "add slice" in note
+
+
 def test_run_momentum_backtest_trades(monkeypatch):
     import funtrade.backtest.engine as eng
 

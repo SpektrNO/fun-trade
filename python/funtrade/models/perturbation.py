@@ -13,16 +13,21 @@ from funtrade.data.loader import MARKET_ADJ_CLOSE, load_price_bars, save_perturb
 from funtrade.models.components import DEFAULT_H1_WEIGHTS, sector_etf_for
 from funtrade.models.equilibrium import EquilibriumModel, load_or_calibrate
 
-# H₀ equilibrium band is ±2σ in log-price space. Express fair-distance in those
-# units (±1 = at the band edge) before blending ε. Clip extremes when macro/trend
-# fair moves gap price from fair — otherwise |ε| and regime_valid blow up.
-_BAND_SIGMA_MULT = 2.0
+# H₀ equilibrium band is ±Nσ in log-price space (N = h0_band_sigma_mult per asset class).
+# Express fair-distance in those units (±1 = at the band edge) before blending ε.
+_BAND_SIGMA_MULT = 2.0  # default when settings unavailable
 _Z_RETURN_CLIP = 8.0
 
 
-def _z_return_from_fair_band(residual: pd.Series, sigma: float) -> pd.Series:
+def _z_return_from_fair_band(
+    residual: pd.Series,
+    sigma: float,
+    *,
+    band_sigma_mult: float = _BAND_SIGMA_MULT,
+) -> pd.Series:
     """log(price/fair) normalized to band σ, clipped for stable ε magnitude."""
-    band_z = residual / (_BAND_SIGMA_MULT * float(sigma))
+    denom = max(float(band_sigma_mult) * float(sigma), 1e-8)
+    band_z = residual / denom
     return band_z.clip(-_Z_RETURN_CLIP, _Z_RETURN_CLIP)
 
 
@@ -100,7 +105,11 @@ def compute_perturbation_series(
         )
 
     band = equilibrium.equilibrium_band(price, symbol=symbol, settings=settings, z_trend=z_trend)
-    z_return = _z_return_from_fair_band(band["residual"], equilibrium.sigma)
+    z_return = _z_return_from_fair_band(
+        band["residual"],
+        equilibrium.sigma,
+        band_sigma_mult=settings.h0_band_sigma_mult,
+    )
 
     volume = df["volume"].astype(float) if "volume" in df.columns else pd.Series(0.0, index=df.index)
     if volume.notna().sum() > 5:

@@ -35,6 +35,8 @@ def test_settings_for_symbol_applies_asset_class():
     assert etf.h0_calibration_days == 400
     assert fund.h0_calibration_days == 600
     assert share.h0_calibration_days == 365
+    assert fund.h0_sigma_floor == 0.015
+    assert fund.h0_seasonal_dow is False
 
 
 def test_config_aliases_override_builtin():

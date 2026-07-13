@@ -69,6 +69,12 @@ class Settings:
     universe: UniverseConfig | None = None
     asset_class: AssetClassName | None = None
     h0_calibration_days: int = 504
+    h0_sigma_floor: float = 0.0
+    h0_band_sigma_mult: float = 2.0
+    h0_seasonal_dow: bool = True
+    h0_mu_anchor_days: int = 252
+    h0_macro_fair_scale: float = 1.0
+    h0_realized_vol_sigma_frac: float = 0.0
     chart_backend: str = "streamlit"
 
     @classmethod
@@ -113,6 +119,12 @@ class Settings:
             universe=universe,
             asset_class="etf",
             h0_calibration_days=etf.h0_calibration_days,
+            h0_sigma_floor=etf.h0_sigma_floor,
+            h0_band_sigma_mult=etf.h0_band_sigma_mult,
+            h0_seasonal_dow=etf.h0_seasonal_dow,
+            h0_mu_anchor_days=etf.h0_mu_anchor_days,
+            h0_macro_fair_scale=etf.h0_macro_fair_scale,
+            h0_realized_vol_sigma_frac=etf.h0_realized_vol_sigma_frac,
             chart_backend=os.getenv("FUNTRADE_CHART_BACKEND", "streamlit").strip().lower(),
         )
 
@@ -141,6 +153,12 @@ class Settings:
             trend_gate_sells=cls_cfg.trend_gate_sells,
             trend_gate_z=cls_cfg.trend_gate_z,
             h0_calibration_days=cls_cfg.h0_calibration_days,
+            h0_sigma_floor=cls_cfg.h0_sigma_floor,
+            h0_band_sigma_mult=cls_cfg.h0_band_sigma_mult,
+            h0_seasonal_dow=cls_cfg.h0_seasonal_dow,
+            h0_mu_anchor_days=cls_cfg.h0_mu_anchor_days,
+            h0_macro_fair_scale=cls_cfg.h0_macro_fair_scale,
+            h0_realized_vol_sigma_frac=cls_cfg.h0_realized_vol_sigma_frac,
         )
 
     def active_h0_component_ids(self) -> tuple[str, ...]:

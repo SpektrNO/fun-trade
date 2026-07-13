@@ -35,6 +35,7 @@ def _calibrate_summary(model, *, asset_class: str | None = None, h0_calibration_
         "sigma": model.sigma,
         "half_life_days": model.half_life_days,
         "seasonal_r_squared": model.seasonal_coeffs.get("r_squared"),
+        "seasonal_dow": model.seasonal_coeffs.get("seasonal_dow"),
     }
     return {k: v for k, v in out.items() if v is not None}
 
