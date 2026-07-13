@@ -169,6 +169,21 @@ class StreamlitNativeRenderer(ChartRenderer):
                 z_cols.extend(["gate", "neg_gate"])
             st.line_chart(charts["z_trend"], x="time", y=z_cols)
 
+    def render_allocation_bars(
+        self,
+        df: pd.DataFrame,
+        *,
+        title: str | None = None,
+        chart_key: str | None = None,
+    ) -> None:
+        if title:
+            st.subheader(title)
+        if df.empty:
+            st.caption("No look-through data — add fund profiles under fund_profiles/.")
+            return
+        plot_df = df.sort_values("weight_pct", ascending=True).set_index("category")
+        st.bar_chart(plot_df[["weight_pct"]], horizontal=True, key=chart_key)
+
     def render_pnl_with_trades(self, df: pd.DataFrame, *, chart_key: str | None = None) -> None:
         kwargs: dict = {"clear_figure": True}
         if chart_key:

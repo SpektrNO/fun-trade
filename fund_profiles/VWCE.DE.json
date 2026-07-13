@@ -1,0 +1,29 @@
+{
+  "symbol": "VWCE.DE",
+  "name": "Vanguard FTSE All-World UCITS ETF",
+  "as_of": "2025-12-31",
+  "source": "Issuer allocation overview (approximate; verify against latest factsheet)",
+  "regions": {
+    "North America": 0.63,
+    "Europe Developed": 0.17,
+    "Asia Pacific Developed": 0.10,
+    "Emerging Markets": 0.10
+  },
+  "sectors": {
+    "Technology": 0.26,
+    "Financials": 0.16,
+    "Healthcare": 0.11,
+    "Industrials": 0.10,
+    "Consumer Discretionary": 0.10,
+    "Communication Services": 0.08,
+    "Consumer Staples": 0.06,
+    "Energy": 0.04,
+    "Materials": 0.04,
+    "Utilities": 0.03,
+    "Real Estate": 0.02
+  },
+  "asset_classes": {
+    "Equity": 0.99,
+    "Cash": 0.01
+  }
+}

@@ -91,7 +91,7 @@ Pair FunTrade with a **strategic core** (DCA, target weights). Use it as a **tac
 
 ```bash
 # 1. Config
-cp .env.example .env && cp config.json.example config.json   # edit config.json watchlists (local, gitignored)
+cp .env.example .env && cp config.json.example config.json && cp portfolio.json.example portfolio.json   # edit locally (gitignored)
 
 # 2. Infrastructure
 make setup                    # install Python deps
@@ -205,6 +205,7 @@ Or use the **Streamlit UI** (`make ui`):
 | Tab | Purpose |
 |-----|---------|
 | **Wallet** | Cash, positions, PnL, recent fills, reset portfolio |
+| **Portfolio** | Look-through geography / sector / asset class from `portfolio.json` + `fund_profiles/` |
 | **Backtest** | Walk-forward test vs buy-and-hold for the selected symbol |
 | **Trade** | ε chart, regime, run one paper cycle for the selected symbol |
 | **Recommendations** | All watchlist symbols — BUY (green) / SELL (orange) / HOLD; Nordnet-style manual overlay |
@@ -292,6 +293,8 @@ Configure in **`config.json`** (`make setup` copies `config.json.example` on fir
 - **`benchmark`** / **`currency`** — global universe defaults  
 - **`etf`**, **`mutual_fund`**, **`share`** — separate symbol lists and trading params (`epsilon_threshold`, regime gates, H₁ weights, trend dampening, **`h0_calibration_days`**)  
 - **`aliases`** — watchlist id → Yahoo/Stooq fetch ticker  
+
+**Real portfolio holdings** (Nordnet weights for allocation views) live in **`portfolio.json`** — also gitignored, copied from `portfolio.json.example` on `make setup`. Trading/model config stays in `config.json`; sector/geography look-through profiles will live under `fund_profiles/` (committed templates, separate from both).
 
 **Tuning:** [docs/tuning-guide.md](docs/tuning-guide.md) — what each parameter does, grouped by strategy (“more signals”, “hold long-term”, bull-market buys, etc.).
 

@@ -25,6 +25,7 @@ from funtrade.ui.service import (
     active_equilibrium_status,
     default_ui_params,
     fetch_recommendations,
+    fetch_portfolio_allocation,
     momentum_trade_context,
     MODEL_AUTO,
     MODEL_MOMENTUM_BENCHMARK,
@@ -355,8 +356,8 @@ if "refresh_result" in st.session_state:
 
 st.session_state.params = params
 
-tab_wallet, tab_backtest, tab_trade, tab_recommendations = st.tabs(
-    ["Wallet", "Backtest", "Trade", "Recommendations"]
+tab_wallet, tab_portfolio, tab_backtest, tab_trade, tab_recommendations = st.tabs(
+    ["Wallet", "Portfolio", "Backtest", "Trade", "Recommendations"]
 )
 
 with tab_wallet:
@@ -382,6 +383,80 @@ with tab_wallet:
         reset_paper_portfolio(paper=params.to_paper_settings(), settings=params.to_settings())
         st.success("Portfolio reset.")
         st.rerun()
+
+with tab_portfolio:
+    st.subheader("Portfolio allocation")
+    st.caption(
+        "Strategic holdings from **`portfolio.json`** with look-through sector/region/asset-class "
+        "from **`fund_profiles/`**. Separate from the paper trading wallet."
+    )
+    alloc = fetch_portfolio_allocation()
+    if alloc is None:
+        st.info(
+            "No **`portfolio.json`** found. Run `cp portfolio.json.example portfolio.json` "
+            "(or `make setup`) and enter your Nordnet weights."
+        )
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Holdings", len(alloc.holdings))
+        c2.metric("Listed weight", f"{alloc.total_weight_pct:.1f}%")
+        c3.metric("With profile", int(alloc.holdings["has_profile"].sum()))
+        c4.metric("Uncovered", f"{alloc.uncovered_weight_pct:.1f}%")
+        if alloc.weight_is_normalized:
+            st.caption(
+                f"Weights in **{alloc.name}** sum to {alloc.total_weight_pct:.1f}% — "
+                "look-through uses normalized proportions."
+            )
+        if alloc.missing_profiles:
+            st.warning(
+                "Missing fund profiles for: "
+                + ", ".join(f"`{s}`" for s in alloc.missing_profiles)
+                + " — add `fund_profiles/{symbol}.json` or remove from portfolio."
+            )
+
+        holdings = alloc.holdings.rename(
+            columns={
+                "symbol": "Symbol",
+                "portfolio_weight_pct": "Weight %",
+                "name": "Fund",
+                "profile_as_of": "Profile as of",
+                "has_profile": "Profile",
+                "note": "Note",
+            }
+        )
+        show_holdings = [
+            c for c in holdings.columns
+            if c not in ("weight_pct", "value_eur", "shares")
+        ]
+        st.markdown("**Holdings**")
+        st.dataframe(holdings[show_holdings], width="stretch", hide_index=True)
+
+        col_geo, col_sec = st.columns(2)
+        with col_geo:
+            chart_renderer.render_allocation_bars(
+                alloc.regions,
+                title="Geography (look-through)",
+                chart_key="portfolio-regions",
+            )
+            if not alloc.regions.empty:
+                st.dataframe(alloc.regions, width="stretch", hide_index=True)
+        with col_sec:
+            chart_renderer.render_allocation_bars(
+                alloc.sectors,
+                title="Sectors (look-through)",
+                chart_key="portfolio-sectors",
+            )
+            if not alloc.sectors.empty:
+                st.dataframe(alloc.sectors, width="stretch", hide_index=True)
+
+        st.markdown("**Asset class (look-through)**")
+        chart_renderer.render_allocation_bars(
+            alloc.asset_classes,
+            title=None,
+            chart_key="portfolio-asset-class",
+        )
+        if not alloc.asset_classes.empty:
+            st.dataframe(alloc.asset_classes, width="stretch", hide_index=True)
 
 with tab_backtest:
     st.subheader(f"Backtest — {params.symbol}")

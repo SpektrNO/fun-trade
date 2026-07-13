@@ -40,6 +40,7 @@ from funtrade.models.perturbation import (
     trend_signal_kwargs,
 )
 from funtrade.paper.runner import run_paper_once
+from funtrade.portfolio.allocation import PortfolioAllocationResult, compute_portfolio_allocation
 from funtrade.ui.plotting.data import build_momentum_price_overlay
 
 CHART_WINDOW_RECENT = "recent_120"
@@ -738,6 +739,11 @@ def momentum_trade_context(
         "as_of": chart_series.index[-1],
         "price_overlay": price_overlay,
     }
+
+
+def fetch_portfolio_allocation() -> PortfolioAllocationResult | None:
+    """Look-through allocation from portfolio.json + fund_profiles/."""
+    return compute_portfolio_allocation()
 
 
 def watchlist_with_class(settings: Settings | None = None) -> list[tuple[str, str]]:

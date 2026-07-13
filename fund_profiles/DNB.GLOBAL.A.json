@@ -1,0 +1,29 @@
+{
+  "symbol": "DNB.GLOBAL.A",
+  "name": "DNB Global A",
+  "as_of": "2025-12-31",
+  "source": "DNB fund profile (approximate; verify against KID/factsheet)",
+  "regions": {
+    "North America": 0.68,
+    "Europe Developed": 0.14,
+    "Asia Pacific Developed": 0.09,
+    "Emerging Markets": 0.09
+  },
+  "sectors": {
+    "Technology": 0.27,
+    "Financials": 0.15,
+    "Healthcare": 0.12,
+    "Industrials": 0.11,
+    "Consumer Discretionary": 0.10,
+    "Communication Services": 0.08,
+    "Consumer Staples": 0.06,
+    "Energy": 0.04,
+    "Materials": 0.04,
+    "Utilities": 0.02,
+    "Real Estate": 0.01
+  },
+  "asset_classes": {
+    "Equity": 0.98,
+    "Cash": 0.02
+  }
+}

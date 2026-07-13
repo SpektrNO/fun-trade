@@ -48,10 +48,11 @@ help-ngrok: ## ngrok tunnel targets (public URL to local Streamlit)
 	@grep -hE '^ngrok-[a-zA-Z0-9_-]+:.*##' $(ROOT)/Makefile | \
 		awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2}'
 
-setup: ## First-time setup: copy .env + config.json, install Python deps
+setup: ## First-time setup: copy .env + config.json + portfolio.json, install Python deps
 	@test -f $(ROOT)/.env || cp $(ROOT)/.env.example $(ROOT)/.env
 	@test -f $(ROOT)/config.json || cp $(ROOT)/config.json.example $(ROOT)/config.json
-	@echo "Created .env and config.json (edit watchlists / DATABASE_URL if needed)"
+	@test -f $(ROOT)/portfolio.json || cp $(ROOT)/portfolio.json.example $(ROOT)/portfolio.json
+	@echo "Created .env, config.json, and portfolio.json (edit locally; gitignored except *.example)"
 	$(MAKE) build
 
 build: ## Install Python package (uv sync)

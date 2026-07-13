@@ -1,0 +1,21 @@
+{
+  "symbol": "DNB.TEKNOLOGIA",
+  "name": "DNB Teknologi A",
+  "as_of": "2025-12-31",
+  "source": "Thematic tech fund profile (approximate)",
+  "regions": {
+    "North America": 0.78,
+    "Europe Developed": 0.12,
+    "Asia Pacific Developed": 0.10
+  },
+  "sectors": {
+    "Technology": 0.85,
+    "Communication Services": 0.08,
+    "Consumer Discretionary": 0.04,
+    "Other": 0.03
+  },
+  "asset_classes": {
+    "Equity": 0.97,
+    "Cash": 0.03
+  }
+}

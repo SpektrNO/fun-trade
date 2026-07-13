@@ -207,6 +207,30 @@ class PlotlyRenderer(ChartRenderer):
                 key=_chart_key("trade", "z-trend"),
             )
 
+    def render_allocation_bars(
+        self,
+        df: pd.DataFrame,
+        *,
+        title: str | None = None,
+        chart_key: str | None = None,
+    ) -> None:
+        if title:
+            st.subheader(title)
+        if df.empty:
+            st.caption("No look-through data — add fund profiles under fund_profiles/.")
+            return
+        plot_df = df.sort_values("weight_pct", ascending=True)
+        fig = go.Figure(
+            go.Bar(
+                x=plot_df["weight_pct"],
+                y=plot_df["category"],
+                orientation="h",
+                marker=dict(color="#3498db"),
+            )
+        )
+        fig.update_layout(xaxis_title="Portfolio weight (%)", yaxis_title="")
+        _show(fig, key=_chart_key("alloc", chart_key or title or "bars"))
+
     def render_pnl_with_trades(self, df: pd.DataFrame, *, chart_key: str | None = None) -> None:
         plot_df = df.copy()
         if "time" in plot_df.columns:

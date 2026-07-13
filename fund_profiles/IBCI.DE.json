@@ -1,0 +1,18 @@
+{
+  "symbol": "IBCI.DE",
+  "name": "iShares Euro Govt Bond UCITS ETF",
+  "as_of": "2025-12-31",
+  "source": "Issuer allocation overview (approximate)",
+  "regions": {
+    "Europe Developed": 0.99,
+    "Cash & Other": 0.01
+  },
+  "sectors": {
+    "Government": 0.97,
+    "Other": 0.03
+  },
+  "asset_classes": {
+    "Fixed Income": 0.98,
+    "Cash": 0.02
+  }
+}

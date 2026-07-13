@@ -1,0 +1,27 @@
+{
+  "symbol": "EXSA.DE",
+  "name": "iShares STOXX Europe 600 UCITS ETF",
+  "as_of": "2025-12-31",
+  "source": "Issuer allocation overview (approximate)",
+  "regions": {
+    "Europe Developed": 0.98,
+    "Other": 0.02
+  },
+  "sectors": {
+    "Financials": 0.18,
+    "Industrials": 0.16,
+    "Healthcare": 0.14,
+    "Consumer Discretionary": 0.11,
+    "Technology": 0.10,
+    "Consumer Staples": 0.10,
+    "Materials": 0.08,
+    "Energy": 0.07,
+    "Utilities": 0.06,
+    "Communication Services": 0.05,
+    "Real Estate": 0.05
+  },
+  "asset_classes": {
+    "Equity": 0.99,
+    "Cash": 0.01
+  }
+}

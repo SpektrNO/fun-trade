@@ -46,5 +46,15 @@ class ChartRenderer(ABC):
         """Trade tab: ε bands, price (+ optional MA/Bollinger overlay), and z_trend."""
 
     @abstractmethod
+    def render_allocation_bars(
+        self,
+        df: pd.DataFrame,
+        *,
+        title: str | None = None,
+        chart_key: str | None = None,
+    ) -> None:
+        """Horizontal bar chart of category weights (weight_pct column)."""
+
+    @abstractmethod
     def render_pnl_with_trades(self, df: pd.DataFrame, *, chart_key: str | None = None) -> None:
         """Backtest: realized/unrealized PnL with buy/sell share bars."""

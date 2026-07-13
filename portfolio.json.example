@@ -1,0 +1,20 @@
+{
+  "name": "My Nordnet portfolio",
+  "currency": "EUR",
+  "valuation_mode": "weight_pct",
+  "holdings": [
+    {
+      "symbol": "DNB.GLOBAL.A",
+      "weight_pct": 20.0
+    },
+    {
+      "symbol": "VWCE.DE",
+      "weight_pct": 15.0
+    },
+    {
+      "symbol": "AGGH.DE",
+      "weight_pct": 10.0
+    }
+  ],
+  "_comment": "Symbols must exist in config.json watchlists (or aliases). valuation_mode: weight_pct | shares | value_eur (shares/value_eur reserved for future import). Fund sector/region breakdown lives in fund_profiles/ (separate from this file)."
+}

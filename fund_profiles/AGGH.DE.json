@@ -1,0 +1,24 @@
+{
+  "symbol": "AGGH.DE",
+  "name": "iShares Global Aggregate Bond UCITS ETF",
+  "as_of": "2025-12-31",
+  "source": "Issuer allocation overview (approximate; verify against latest factsheet)",
+  "regions": {
+    "North America": 0.42,
+    "Europe Developed": 0.38,
+    "Asia Pacific Developed": 0.12,
+    "Emerging Markets": 0.08
+  },
+  "sectors": {
+    "Government": 0.52,
+    "Financials": 0.18,
+    "Corporate Industrials": 0.12,
+    "Corporate Utilities": 0.06,
+    "Securitized": 0.07,
+    "Other": 0.05
+  },
+  "asset_classes": {
+    "Fixed Income": 0.97,
+    "Cash": 0.03
+  }
+}
