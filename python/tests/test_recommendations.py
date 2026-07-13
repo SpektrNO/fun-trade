@@ -1,7 +1,8 @@
 import pandas as pd
+from dataclasses import replace
 
 from funtrade.models.perturbation import signal_from_epsilon
-from funtrade.ui.service import _recommendation_note
+from funtrade.ui.service import _recommendation_note, default_ui_params, params_draft_pending
 
 
 def test_recommendation_signal_buy():
@@ -34,6 +35,13 @@ def test_recommendation_signal_blocked_by_regime():
         trend_gate_z=0.5,
     )
     assert note == "Buy blocked (regime)"
+
+
+def test_params_draft_pending_detects_sidebar_changes():
+    base = default_ui_params("VWCE.DE")
+    changed = replace(base, epsilon_threshold=base.epsilon_threshold + 0.1)
+    assert not params_draft_pending(base, base)
+    assert params_draft_pending(base, changed)
 
 
 def test_auto_recommendations_use_momentum_when_trending(monkeypatch):

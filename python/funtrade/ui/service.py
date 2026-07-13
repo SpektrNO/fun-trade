@@ -67,8 +67,14 @@ def backtest_params_fingerprint(params: UiParams) -> str:
             f"{params.trend_epsilon_weight:.4f}:{params.trend_fair_value_weight:.4f}",
             str(params.trend_gate_sells),
             f"{params.trend_gate_z:.4f}",
+            f"{params.h0_weight_oil:.4f}:{params.h0_weight_climate:.4f}",
         ]
     )
+
+
+def params_draft_pending(applied: UiParams, draft: UiParams) -> bool:
+    """True when sidebar draft differs from last-applied settings."""
+    return backtest_params_fingerprint(applied) != backtest_params_fingerprint(draft)
 
 
 def backtest_data_revision(symbol: str, *, settings: Settings | None = None) -> str:
@@ -846,6 +852,9 @@ def run_backtest_for_ui(params: UiParams) -> dict:
     if not result.price.empty:
         price_as_of = str(result.price.index[-1])
     data_revision = backtest_data_revision(params.symbol, settings=settings)
+    h0_status = active_equilibrium_status(
+        params.symbol, h0_source=params.h0_source, settings=settings,
+    )
     bh = buy_and_hold_from_prices(result.price, params.paper_initial_cash)
 
     momentum_result = None
@@ -943,6 +952,7 @@ def run_backtest_for_ui(params: UiParams) -> dict:
         "cache_key": backtest_cache_key(params),
         "fingerprint": backtest_params_fingerprint(params),
         "data_revision": data_revision,
+        "h0_status": h0_status,
         "price_as_of": price_as_of,
         "symbol": params.symbol,
         "epsilon_threshold": threshold,
