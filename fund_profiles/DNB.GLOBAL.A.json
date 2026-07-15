@@ -1,29 +1,32 @@
 {
   "symbol": "DNB.GLOBAL.A",
   "name": "DNB Global A",
-  "as_of": "2025-12-31",
-  "source": "DNB fund profile (approximate; verify against KID/factsheet)",
+  "as_of": "2026-05-31",
+  "source": "Nordnet (dnb-global-a-nok-ba24c3e9)",
   "regions": {
-    "North America": 0.68,
-    "Europe Developed": 0.14,
-    "Asia Pacific Developed": 0.09,
-    "Emerging Markets": 0.09
+    "North America": 0.6142614261426143,
+    "Europe Developed": 0.17341734173417342,
+    "Europa ex. Euro": 0.10921092109210921,
+    "Asia Pacific Developed": 0.047704770477047694,
+    "Asia": 0.0215021502150215,
+    "Emerging Markets": 0.014601460146014602,
+    "Middle East": 0.011801180118011801,
+    "Latin America": 0.007500750075007501
   },
   "sectors": {
-    "Technology": 0.27,
-    "Financials": 0.15,
-    "Healthcare": 0.12,
-    "Industrials": 0.11,
-    "Consumer Discretionary": 0.10,
-    "Communication Services": 0.08,
-    "Consumer Staples": 0.06,
-    "Energy": 0.04,
-    "Materials": 0.04,
-    "Utilities": 0.02,
-    "Real Estate": 0.01
+    "Technology": 0.300969903009699,
+    "Financials": 0.17508249175082494,
+    "Consumer Discretionary": 0.12188781121887811,
+    "Helsevern": 0.11978802119788022,
+    "Industrials": 0.0917908209179082,
+    "Kommunikasjon": 0.08029197080291971,
+    "Materials": 0.031196880311968805,
+    "Verktøy": 0.028297170282971705,
+    "Olje & Gass": 0.026197380261973803,
+    "Forbruksvarer": 0.024497550244975505
   },
   "asset_classes": {
-    "Equity": 0.98,
-    "Cash": 0.02
+    "Equity": 0.9812000000000001,
+    "Cash": 0.018799999999999997
   }
 }

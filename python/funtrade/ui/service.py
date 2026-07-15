@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import pandas as pd
 
@@ -40,6 +41,7 @@ from funtrade.models.perturbation import (
     trend_signal_kwargs,
 )
 from funtrade.portfolio.allocation import PortfolioAllocationResult, compute_portfolio_allocation
+from funtrade.portfolio_config import load_portfolio_config
 from funtrade.ui.plotting.data import build_momentum_price_overlay
 
 CHART_WINDOW_RECENT = "recent_120"
@@ -753,9 +755,12 @@ def momentum_trade_context(
     }
 
 
-def fetch_portfolio_allocation() -> PortfolioAllocationResult | None:
-    """Look-through allocation from portfolio.json + fund_profiles/."""
-    return compute_portfolio_allocation()
+def fetch_portfolio_allocation(
+    portfolio_path: Path | str | None = None,
+) -> PortfolioAllocationResult | None:
+    """Look-through allocation from portfolio JSON + fund_profiles/."""
+    portfolio = load_portfolio_config(portfolio_path)
+    return compute_portfolio_allocation(portfolio)
 
 
 def watchlist_with_class(settings: Settings | None = None) -> list[tuple[str, str]]:
@@ -1037,13 +1042,23 @@ def run_refresh(
     *,
     days: int = DEFAULT_REFRESH_DAYS,
     settings: Settings | None = None,
+    asset_classes: str | list[str] | None = None,
 ) -> dict:
     """Same pipeline as `make refresh`: ingest → factors → detect."""
+    from funtrade.universe_config import parse_asset_classes
+
     settings = settings or Settings.from_env()
+    symbols: list[str] | None = None
+    if asset_classes:
+        parsed = parse_asset_classes(asset_classes)
+        symbols = settings.universe.symbols_for_classes(parsed) if settings.universe else []
     out: dict = {"days": days, "steps": {}}
+    if symbols is not None:
+        out["asset_classes"] = list(parse_asset_classes(asset_classes))
+        out["symbols"] = symbols
 
     try:
-        ingest_counts = ingest_watchlist(days=days, settings=settings)
+        ingest_counts = ingest_watchlist(days=days, symbols=symbols, settings=settings)
         out["steps"]["ingest"] = {
             "ok": True,
             "rows_upserted": ingest_counts,
@@ -1067,7 +1082,7 @@ def run_refresh(
         return out
 
     try:
-        detections = detect_latest_perturbations(settings=settings, persist=True)
+        detections = detect_latest_perturbations(settings=settings, symbols=symbols, persist=True)
         out["steps"]["detect"] = {
             "ok": True,
             "symbols": len(detections),

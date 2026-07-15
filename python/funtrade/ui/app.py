@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import streamlit as st
 from dataclasses import replace
@@ -43,6 +45,7 @@ from funtrade.ui.service import (
     watchlist_with_class,
     DEFAULT_REFRESH_DAYS,
 )
+from funtrade.portfolio_config import discover_portfolio_files
 
 # Emoji page_icon creates /images/<hash>.png URLs that iOS/link previews open directly;
 # Streamlit then serves HTML at that path and relative ./static/ assets break → blank page.
@@ -430,16 +433,39 @@ with tab_wallet:
 with tab_portfolio:
     st.subheader("Portfolio allocation")
     st.caption(
-        "Strategic holdings from **`portfolio.json`** with look-through sector/region/asset-class "
-        "from **`fund_profiles/`**. Separate from the paper trading wallet."
+        "Strategic holdings from **`portfolio.json`** or **`portfolio_*.json`** with look-through "
+        "sector/region/asset-class from **`fund_profiles/`**. Separate from the paper trading wallet."
     )
-    alloc = fetch_portfolio_allocation()
-    if alloc is None:
+    portfolio_files = discover_portfolio_files()
+    alloc = None
+    if not portfolio_files:
         st.info(
-            "No **`portfolio.json`** found. Run `cp portfolio.json.example portfolio.json` "
-            "(or `make setup`) and enter your Nordnet weights."
+            "No portfolio JSON files in the project root. "
+            "Add `portfolio.json`, `portfolio_private.json`, or similar."
         )
+        alloc = None
     else:
+        file_names = [p.name for p in portfolio_files]
+        env_default = os.getenv("FUNTRADE_PORTFOLIO", "")
+        if env_default in file_names:
+            default_name = env_default
+        elif "portfolio_private.json" in file_names:
+            default_name = "portfolio_private.json"
+        else:
+            default_name = file_names[0]
+        if st.session_state.get("portfolio_file") not in file_names:
+            st.session_state["portfolio_file"] = default_name
+        selected_file = st.selectbox(
+            "Portfolio file",
+            file_names,
+            key="portfolio_file",
+        )
+        selected_path = next(p for p in portfolio_files if p.name == selected_file)
+        alloc = fetch_portfolio_allocation(selected_path)
+        if alloc is None:
+            st.warning(f"Could not load **`{selected_file}`**.")
+
+    if alloc is not None:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Holdings", len(alloc.holdings))
         c2.metric("Listed weight", f"{alloc.total_weight_pct:.1f}%")

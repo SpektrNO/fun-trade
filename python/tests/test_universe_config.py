@@ -1,7 +1,8 @@
 """Tests for config.json universe loading."""
 
+from funtrade.cli import _resolve_watchlist_symbols
 from funtrade.config import Settings
-from funtrade.universe_config import load_universe_config, reset_universe_config_cache
+from funtrade.universe_config import load_universe_config, parse_asset_classes, reset_universe_config_cache
 
 
 def test_load_universe_config_strategy_router():
@@ -37,6 +38,26 @@ def test_settings_for_symbol_applies_asset_class():
     assert share.h0_calibration_days == 365
     assert fund.h0_sigma_floor == 0.015
     assert fund.h0_seasonal_dow is False
+
+
+def test_parse_asset_classes_accepts_aliases():
+    assert parse_asset_classes("ETF SHARE") == ("etf", "share")
+    assert parse_asset_classes(["mutual_fund", "FUNDS"]) == ("mutual_fund",)
+
+
+def test_symbols_for_classes_filters_watchlist():
+    reset_universe_config_cache()
+    cfg = load_universe_config(force_reload=True)
+    assert cfg.symbols_for_classes(("etf", "share")) == list(cfg.etf.symbols) + list(cfg.share.symbols)
+    assert cfg.symbols_for_classes(("mutual_fund",)) == list(cfg.mutual_fund.symbols)
+
+
+def test_resolve_watchlist_symbols_by_class():
+    settings = Settings.from_env()
+    symbols = _resolve_watchlist_symbols(settings, symbol=None, symbols=None, classes=["ETF"])
+    assert symbols is not None
+    assert "VWCE.DE" in symbols
+    assert "NO0010336977" not in symbols
 
 
 def test_config_aliases_override_builtin():

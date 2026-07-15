@@ -29,7 +29,7 @@ endif
 
 .PHONY: help setup build test run run-down migrate logs \
         seed ingest ingest-factors calibrate calibrate-all detect backtest paper reconcile \
-        refresh grafana-reload ui components jacobian sweep compare clean \
+        refresh grafana-reload ui fetch-profiles components jacobian sweep compare clean \
         help-ngrok ngrok-install ngrok-setup ngrok-check ngrok-tunnel ngrok-tunnel-ephemeral ngrok-url
 
 help: ## Show this help
@@ -84,11 +84,13 @@ migrate: ## Apply SQL migrations to running DB
 seed: build ## Load synthetic daily bars (offline, no API)
 	cd $(PYTHON_DIR) && $(UV) run funtrade-seed --days $(DAYS)
 
-ingest: build ## Ingest prices (all watchlist, SYMBOL=one, or SYMBOLS='A B')
+ingest: build ## Ingest prices (watchlist, SYMBOL=, SYMBOLS=, or CLASS='etf share')
 ifeq ($(origin SYMBOLS),command line)
 	cd $(PYTHON_DIR) && $(UV) run funtrade-ingest --days $(DAYS) --symbols $(SYMBOLS)
 else ifeq ($(origin SYMBOL),command line)
 	cd $(PYTHON_DIR) && $(UV) run funtrade-ingest --days $(DAYS) --symbol $(SYMBOL)
+else ifneq ($(strip $(CLASS)),)
+	cd $(PYTHON_DIR) && $(UV) run funtrade-ingest --days $(DAYS) --class $(CLASS)
 else
 	cd $(PYTHON_DIR) && $(UV) run funtrade-ingest --days $(DAYS)
 endif
@@ -102,8 +104,12 @@ calibrate: build ## Calibrate H0 OU equilibrium (SYMBOL=...)
 calibrate-all: build ## Calibrate H0 for entire WATCHLIST
 	cd $(PYTHON_DIR) && $(UV) run funtrade-calibrate --all
 
-detect: build ## Detect latest ε perturbations for watchlist
+detect: build ## Detect latest ε perturbations (CLASS='etf share' to filter)
+ifneq ($(strip $(CLASS)),)
+	cd $(PYTHON_DIR) && $(UV) run funtrade-detect --class $(CLASS)
+else
 	cd $(PYTHON_DIR) && $(UV) run funtrade-detect
+endif
 
 backtest: build ## Run walk-forward backtest (SYMBOL=...)
 	cd $(PYTHON_DIR) && $(UV) run funtrade-backtest --symbol $(SYMBOL)
@@ -124,10 +130,19 @@ endif
 reconcile: build ## Cross-check Stooq vs EOD (needs EOD_API_TOKEN)
 	cd $(PYTHON_DIR) && $(UV) run funtrade-reconcile --symbol $(SYMBOL)
 
-refresh: build ## Recent ingest + detect (REFRESH_DAYS=14, needs network)
-	$(MAKE) ingest DAYS=$(REFRESH_DAYS)
+refresh: build ## Recent ingest + detect (REFRESH_DAYS=14; CLASS='etf share')
+	$(MAKE) ingest DAYS=$(REFRESH_DAYS) $(if $(CLASS),CLASS="$(CLASS)")
 	$(MAKE) ingest-factors DAYS=$(REFRESH_DAYS)
-	$(MAKE) detect
+	$(MAKE) detect $(if $(CLASS),CLASS="$(CLASS)")
+
+fetch-profiles: build ## Fetch fund_profiles (Nordnet slugs; EOD fallback for ETFs without slug)
+ifeq ($(origin SYMBOL),command line)
+	cd $(PYTHON_DIR) && $(UV) run funtrade-fetch-profiles --symbol $(SYMBOL) $(if $(NORDNET_URL),--nordnet-url "$(NORDNET_URL)")
+else ifneq ($(strip $(CLASS)),)
+	cd $(PYTHON_DIR) && $(UV) run funtrade-fetch-profiles --class $(CLASS)
+else
+	cd $(PYTHON_DIR) && $(UV) run funtrade-fetch-profiles --class etf
+endif
 
 ui: build ## Streamlit console → http://localhost:8501
 	cd $(PYTHON_DIR) && $(UV) run funtrade-ui

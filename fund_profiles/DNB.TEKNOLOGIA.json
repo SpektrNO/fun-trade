@@ -1,21 +1,25 @@
 {
   "symbol": "DNB.TEKNOLOGIA",
   "name": "DNB Teknologi A",
-  "as_of": "2025-12-31",
-  "source": "Thematic tech fund profile (approximate)",
+  "as_of": "2026-03-31",
+  "source": "Nordnet (dnb-teknologi-a-nok-9e13a6a6)",
   "regions": {
-    "North America": 0.78,
-    "Europe Developed": 0.12,
-    "Asia Pacific Developed": 0.10
+    "North America": 0.7057,
+    "Europe Developed": 0.11620000000000001,
+    "Europa ex. Euro": 0.09810000000000002,
+    "Asia": 0.033100000000000004,
+    "Asia Pacific Developed": 0.019900000000000004,
+    "Middle East": 0.017400000000000002,
+    "Emerging Markets": 0.009600000000000001
   },
   "sectors": {
-    "Technology": 0.85,
-    "Communication Services": 0.08,
-    "Consumer Discretionary": 0.04,
-    "Other": 0.03
+    "Technology": 0.6412,
+    "Kommunikasjon": 0.1843,
+    "Consumer Discretionary": 0.1025,
+    "Financials": 0.07200000000000001
   },
   "asset_classes": {
-    "Equity": 0.97,
-    "Cash": 0.03
+    "Equity": 0.9845,
+    "Cash": 0.0155
   }
 }

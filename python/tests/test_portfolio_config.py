@@ -2,7 +2,11 @@ import json
 
 import pytest
 
-from funtrade.portfolio_config import load_portfolio_config, reset_portfolio_config_cache
+from funtrade.portfolio_config import (
+    discover_portfolio_files,
+    load_portfolio_config,
+    reset_portfolio_config_cache,
+)
 
 
 def test_load_portfolio_config_missing_returns_none(tmp_path, monkeypatch):
@@ -55,6 +59,56 @@ def test_load_portfolio_config_caches_on_second_call(tmp_path, monkeypatch):
     assert first is not None
     second = load_portfolio_config()
     assert second is first
+
+
+def test_discover_portfolio_files(tmp_path, monkeypatch):
+    reset_portfolio_config_cache()
+    monkeypatch.setattr("funtrade.portfolio_config.repo_root", lambda: tmp_path)
+    (tmp_path / "portfolio_private.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "portfolio_spektr.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "portfolio.json").write_text("{}", encoding="utf-8")
+    names = [p.name for p in discover_portfolio_files()]
+    assert names == ["portfolio.json", "portfolio_private.json", "portfolio_spektr.json"]
+
+
+def test_load_portfolio_config_from_filename_only(tmp_path, monkeypatch):
+    reset_portfolio_config_cache()
+    monkeypatch.setattr("funtrade.portfolio_config.repo_root", lambda: tmp_path)
+    path = tmp_path / "portfolio_spektr.json"
+    path.write_text(
+        json.dumps(
+            {
+                "name": "Spektr",
+                "valuation_mode": "weight_pct",
+                "holdings": [{"symbol": "VWCE.DE", "weight_pct": 100.0}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "python").mkdir(exist_ok=True)
+    monkeypatch.chdir(tmp_path / "python")
+    cfg = load_portfolio_config("portfolio_spektr.json")
+    assert cfg is not None
+    assert cfg.name == "Spektr"
+
+
+def test_load_portfolio_config_from_explicit_path(tmp_path, monkeypatch):
+    reset_portfolio_config_cache()
+    path = tmp_path / "portfolio_private.json"
+    path.write_text(
+        json.dumps(
+            {
+                "name": "Private",
+                "valuation_mode": "weight_pct",
+                "holdings": [{"symbol": "VWCE.DE", "weight_pct": 100.0}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_portfolio_config(path)
+    assert cfg is not None
+    assert cfg.name == "Private"
+    assert cfg.source_path == path.resolve()
 
 
 def test_load_portfolio_config_requires_weight_when_mode_weight_pct(tmp_path, monkeypatch):

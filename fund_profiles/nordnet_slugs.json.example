@@ -1,0 +1,5 @@
+{
+  "DNB.TEKNOLOGIA": "dnb-teknologi-a-nok-9e13a6a6",
+  "KLP.AKSJE.FREMVOKSENDE.MRKDR.FLERFAKTOR.N": "klp-aksje-fremvoksende-mrkdr-nok-39e33140",
+  "_comment": "Map config.json symbols (ETF or mutual_fund) to Nordnet URL slug (path after /fond/liste/)."
+}

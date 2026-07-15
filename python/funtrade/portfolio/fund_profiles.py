@@ -89,6 +89,33 @@ def load_fund_profile(symbol: str) -> FundProfile | None:
     return None
 
 
+def save_fund_profile(profile: FundProfile, *, overwrite: bool = True) -> Path:
+    """Write fund_profiles/{symbol}.json."""
+    base = fund_profiles_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / f"{profile.symbol}.json"
+    if path.exists() and not overwrite:
+        raise FileExistsError(str(path))
+    path.write_text(
+        json.dumps(
+            {
+                "symbol": profile.symbol,
+                "name": profile.name,
+                "as_of": profile.as_of,
+                "source": profile.source,
+                "regions": profile.regions,
+                "sectors": profile.sectors,
+                "asset_classes": profile.asset_classes,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def list_fund_profile_symbols() -> list[str]:
     base = fund_profiles_dir()
     if not base.is_dir():

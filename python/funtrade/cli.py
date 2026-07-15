@@ -90,10 +90,21 @@ def calibrate(argv: list[str] | None = None) -> None:
 def detect(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Detect latest perturbations")
     parser.add_argument("--symbol", default=None)
+    parser.add_argument(
+        "--class",
+        dest="classes",
+        nargs="+",
+        default=None,
+        metavar="CLASS",
+        help="Asset classes to include (etf, mutual_fund, share)",
+    )
     args = parser.parse_args(argv)
 
-    symbols = [args.symbol] if args.symbol else None
-    results = detect_latest_perturbations(symbols=symbols)
+    settings = Settings.from_env()
+    symbols = _resolve_watchlist_symbols(
+        settings, symbol=args.symbol, symbols=None, classes=args.classes,
+    )
+    results = detect_latest_perturbations(symbols=symbols, settings=settings)
     print(
         json.dumps(
             [
@@ -205,6 +216,27 @@ def _resolve_ingest_symbols(*, symbol: str | None, symbols: list[str] | None) ->
     return None
 
 
+def _resolve_watchlist_symbols(
+    settings: Settings,
+    *,
+    symbol: str | None,
+    symbols: list[str] | None,
+    classes: list[str] | None,
+) -> list[str] | None:
+    """Resolve ingest/detect symbol list from CLI flags."""
+    explicit = _resolve_ingest_symbols(symbol=symbol, symbols=symbols)
+    if explicit is not None:
+        return explicit
+    if not classes:
+        return None
+    from funtrade.universe_config import parse_asset_classes
+
+    parsed = parse_asset_classes(classes)
+    if settings.universe is None:
+        return []
+    return settings.universe.symbols_for_classes(parsed)
+
+
 def ingest(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Ingest watchlist price bars from Stooq")
     parser.add_argument("--days", type=int, default=730)
@@ -216,10 +248,21 @@ def ingest(argv: list[str] | None = None) -> None:
         metavar="SYMBOL",
         help="Whitespace-separated symbols (e.g. --symbols VWCE.DE EXSA.DE)",
     )
+    parser.add_argument(
+        "--class",
+        dest="classes",
+        nargs="+",
+        default=None,
+        metavar="CLASS",
+        help="Asset classes to include (etf, mutual_fund, share)",
+    )
     args = parser.parse_args(argv)
 
-    resolved = _resolve_ingest_symbols(symbol=args.symbol, symbols=args.symbols)
-    counts = ingest_watchlist(days=args.days, symbols=resolved)
+    settings = Settings.from_env()
+    resolved = _resolve_watchlist_symbols(
+        settings, symbol=args.symbol, symbols=args.symbols, classes=args.classes,
+    )
+    counts = ingest_watchlist(days=args.days, symbols=resolved, settings=settings)
     print(json.dumps({"rows_upserted": counts}, indent=2))
 
 
@@ -301,6 +344,84 @@ def components(argv: list[str] | None = None) -> None:
     )
 
 
+def fetch_profiles_cli(argv: list[str] | None = None) -> None:
+    from funtrade.portfolio.profile_fetch import fetch_profiles, symbols_for_profile_fetch
+
+    parser = argparse.ArgumentParser(
+        description="Fetch fund composition profiles (Nordnet; EOD fallback for ETFs without slug)",
+    )
+    parser.add_argument("--symbol", default=None, help="Single watchlist symbol")
+    parser.add_argument(
+        "--symbols",
+        nargs="+",
+        default=None,
+        metavar="SYMBOL",
+        help="Whitespace-separated symbols",
+    )
+    parser.add_argument(
+        "--class",
+        dest="classes",
+        nargs="+",
+        default=None,
+        metavar="CLASS",
+        help="Asset classes (etf, mutual_fund, share)",
+    )
+    parser.add_argument(
+        "--source",
+        choices=("auto", "eod", "nordnet", "static"),
+        default="auto",
+        help="Profile source (default: auto by asset class)",
+    )
+    parser.add_argument(
+        "--nordnet-url",
+        default=None,
+        help="Nordnet fund page URL or slug (requires --symbol for mutual funds)",
+    )
+    parser.add_argument(
+        "--no-overwrite",
+        action="store_true",
+        help="Skip symbols that already have fund_profiles/{symbol}.json",
+    )
+    args = parser.parse_args(argv)
+
+    settings = Settings.from_env()
+    symbols = symbols_for_profile_fetch(
+        settings, symbols=_resolve_watchlist_symbols(
+            settings,
+            symbol=args.symbol,
+            symbols=args.symbols,
+            classes=args.classes,
+        ),
+        asset_classes=args.classes,
+    )
+
+    if args.nordnet_url:
+        if not args.symbol:
+            parser.error("--nordnet-url requires --symbol")
+        symbols = [args.symbol]
+
+    if not symbols:
+        print(json.dumps({"error": "No symbols to fetch"}, indent=2))
+        return
+
+    if args.nordnet_url and args.symbol:
+        from funtrade.portfolio.nordnet_profiles import fetch_nordnet_fund_profile
+        from funtrade.portfolio.fund_profiles import save_fund_profile
+
+        profile = fetch_nordnet_fund_profile(args.nordnet_url, symbol=args.symbol)
+        path = save_fund_profile(profile, overwrite=not args.no_overwrite)
+        print(json.dumps({"saved": {args.symbol: str(path)}}, indent=2))
+        return
+
+    results = fetch_profiles(
+        symbols,
+        settings=settings,
+        source=args.source,
+        overwrite=not args.no_overwrite,
+    )
+    print(json.dumps({"results": results}, indent=2))
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: funtrade <calibrate|detect|backtest|...> [args]")
@@ -314,6 +435,7 @@ def main() -> None:
         "ingest": ingest,
         "ingest-factors": ingest_factors,
         "reconcile": reconcile,
+        "fetch-profiles": fetch_profiles_cli,
         "components": components,
         "symbols": symbols,
     }

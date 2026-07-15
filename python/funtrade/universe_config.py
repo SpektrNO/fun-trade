@@ -6,11 +6,51 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 AssetClassName = Literal["etf", "mutual_fund", "share"]
 MomentumPositionMode = Literal["slice", "scale", "full"]
 ASSET_CLASSES: tuple[AssetClassName, ...] = ("etf", "mutual_fund", "share")
+
+_ASSET_CLASS_ALIASES: dict[str, AssetClassName] = {
+    "etf": "etf",
+    "etfs": "etf",
+    "mutual_fund": "mutual_fund",
+    "mutual_funds": "mutual_fund",
+    "mutual": "mutual_fund",
+    "fund": "mutual_fund",
+    "funds": "mutual_fund",
+    "share": "share",
+    "shares": "share",
+    "stock": "share",
+    "stocks": "share",
+}
+
+
+def parse_asset_classes(values: str | Iterable[str] | None) -> tuple[AssetClassName, ...]:
+    """Parse CLI/Make CLASS values such as ``ETF SHARE`` or ``['etf', 'share']``."""
+    if not values:
+        return ()
+    parts: list[str] = []
+    if isinstance(values, str):
+        parts.extend(values.split())
+    else:
+        for value in values:
+            parts.extend(str(value).split())
+    out: list[AssetClassName] = []
+    seen: set[AssetClassName] = set()
+    for part in parts:
+        key = part.strip().lower().replace("-", "_")
+        if not key:
+            continue
+        normalized = _ASSET_CLASS_ALIASES.get(key)
+        if normalized is None:
+            allowed = ", ".join(sorted({k for k, v in _ASSET_CLASS_ALIASES.items() if k == v}))
+            raise ValueError(f"Unknown asset class {part!r}. Use: {allowed}")
+        if normalized not in seen:
+            seen.add(normalized)
+            out.append(normalized)
+    return tuple(out)
 
 
 def _env_calibration_days() -> int:
@@ -193,6 +233,16 @@ class UniverseConfig:
 
     def watchlist(self) -> list[str]:
         return list(self.etf.symbols) + list(self.mutual_fund.symbols) + list(self.share.symbols)
+
+    def symbols_for_classes(self, classes: Iterable[AssetClassName]) -> list[str]:
+        """Symbols belonging to one or more asset classes (preserves config order)."""
+        class_list = tuple(classes)
+        if not class_list:
+            return self.watchlist()
+        out: list[str] = []
+        for name in class_list:
+            out.extend(getattr(self, name).symbols)
+        return out
 
     def class_of(self, symbol: str) -> AssetClassName:
         key = symbol.strip().upper()

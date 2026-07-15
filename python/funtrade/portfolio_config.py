@@ -59,6 +59,31 @@ def portfolio_path() -> Path:
     return (repo_root() / raw).resolve()
 
 
+def discover_portfolio_files() -> list[Path]:
+    """JSON portfolio files in repo root (portfolio.json and portfolio_*.json)."""
+    root = repo_root()
+    files: list[Path] = []
+    default = root / "portfolio.json"
+    if default.is_file():
+        files.append(default)
+    files.extend(p for p in sorted(root.glob("portfolio_*.json")) if p != default)
+    return files
+
+
+def resolve_portfolio_file(path: Path | str) -> Path:
+    """Resolve portfolio JSON path (filename or relative) against repo root."""
+    raw = Path(path)
+    if raw.is_file():
+        return raw.resolve()
+    if raw.is_absolute():
+        return raw
+    for base in (Path.cwd(), repo_root()):
+        candidate = (base / raw).resolve()
+        if candidate.is_file():
+            return candidate
+    return (repo_root() / raw).resolve()
+
+
 def _parse_valuation_mode(raw: str | None) -> PortfolioValuationMode:
     mode = str(raw or _DEFAULT_VALUATION_MODE).strip().lower()
     if mode not in ("weight_pct", "shares", "value_eur"):
@@ -93,17 +118,7 @@ def _parse_holding(raw: dict, *, valuation_mode: PortfolioValuationMode) -> Port
     return PortfolioHolding(symbol=symbol, weight_pct=w, shares=sh, value_eur=val, note=note_str)
 
 
-def load_portfolio_config(*, force_reload: bool = False) -> PortfolioConfig | None:
-    """Load portfolio.json if present; None when file does not exist yet."""
-    global _cached
-    if _cached is not _UNSET and not force_reload:
-        return _cached  # type: ignore[return-value]
-
-    path = portfolio_path()
-    if not path.is_file():
-        _cached = None
-        return None
-
+def _parse_portfolio_file(path: Path) -> PortfolioConfig:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"{path}: root must be a JSON object")
@@ -119,13 +134,37 @@ def load_portfolio_config(*, force_reload: bool = False) -> PortfolioConfig | No
             raise ValueError(f"{path}: holdings[{i}] must be an object")
         holdings.append(_parse_holding(item, valuation_mode=valuation_mode))
 
-    cfg = PortfolioConfig(
+    return PortfolioConfig(
         name=str(payload.get("name", "Portfolio")),
         currency=str(payload.get("currency", "EUR")),
         valuation_mode=valuation_mode,
         holdings=tuple(holdings),
-        source_path=path,
+        source_path=path.resolve(),
     )
+
+
+def load_portfolio_config(
+    path: Path | str | None = None,
+    *,
+    force_reload: bool = False,
+) -> PortfolioConfig | None:
+    """Load portfolio JSON. Uses FUNTRADE_PORTFOLIO when path is omitted."""
+    if path is not None:
+        resolved = resolve_portfolio_file(path)
+        if not resolved.is_file():
+            return None
+        return _parse_portfolio_file(resolved)
+
+    global _cached
+    if _cached is not _UNSET and not force_reload:
+        return _cached  # type: ignore[return-value]
+
+    resolved = portfolio_path()
+    if not resolved.is_file():
+        _cached = None
+        return None
+
+    cfg = _parse_portfolio_file(resolved)
     _cached = cfg
     return cfg
 

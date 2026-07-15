@@ -29,6 +29,33 @@ def test_run_refresh_runs_ingest_factors_and_detect(monkeypatch):
     assert "paper" not in result["steps"]
 
 
+def test_run_refresh_honors_asset_classes(monkeypatch):
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        svc,
+        "ingest_watchlist",
+        lambda **kw: calls.update(ingest=kw.get("symbols")) or {"VWCE.DE": 14},
+    )
+    monkeypatch.setattr(
+        svc,
+        "ingest_macro_factors",
+        lambda **kw: {"eur_usd": 14},
+    )
+    monkeypatch.setattr(
+        svc,
+        "detect_latest_perturbations",
+        lambda **kw: calls.update(detect=kw.get("symbols")) or [],
+    )
+
+    result = svc.run_refresh(days=14, asset_classes="ETF SHARE")
+
+    assert result["ok"] is True
+    assert result["asset_classes"] == ["etf", "share"]
+    assert calls["ingest"] == calls["detect"]
+    assert "NO0010336977" not in (calls["ingest"] or [])
+
+
 def test_run_refresh_stops_on_ingest_failure(monkeypatch):
     monkeypatch.setattr(
         svc,

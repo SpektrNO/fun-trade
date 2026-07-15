@@ -65,3 +65,7 @@ Thumbs.db
 *.log
 config.json
 portfolio.json
+portfolio_*
+fund_profiles/**
+!fund_profiles/README.md
+!fund_profiles/nordnet_slugs.json.example
