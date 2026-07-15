@@ -312,22 +312,36 @@ def _recommendation_position_qty(
     portfolio_shares: float | None = None,
     portfolio_value: float | None = None,
 ) -> tuple[float, bool]:
-    if paper_qty > 0:
-        return paper_qty, False
-
     in_portfolio = symbol in held_symbols
     assume_held = assume_holding_all or in_portfolio
     if not assume_held:
         return 0.0, False
 
-    if portfolio_shares is not None and portfolio_shares > 0:
-        return portfolio_shares, False
+    # Real portfolio file overrides paper-wallet dust for scoped holdings.
+    if in_portfolio:
+        if portfolio_shares is not None and portfolio_shares > 0:
+            return portfolio_shares, False
+        if portfolio_value is not None and portfolio_value > 0 and price > 0:
+            return portfolio_value / price, False
 
-    if portfolio_value is not None and portfolio_value > 0 and price > 0:
-        return portfolio_value / price, False
+    if paper_qty > 0:
+        return paper_qty, False
 
     assumed_qty = assumed_eur / price if price > 0 else assumed_eur / 100.0
     return assumed_qty, True
+
+
+def format_position_shares(qty: float, *, assumed: bool = False) -> str:
+    """Human-readable units; avoid rounding small mutual-fund lots to zero."""
+    if qty >= 100:
+        text = f"{qty:.0f}"
+    elif qty >= 1:
+        text = f"{qty:.1f}"
+    elif qty > 0:
+        text = f"{qty:.2f}"
+    else:
+        text = "0"
+    return f"{text}*" if assumed else text
 
 
 def _sort_recommendations_by_position(df: pd.DataFrame) -> pd.DataFrame:

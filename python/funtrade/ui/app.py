@@ -29,6 +29,7 @@ from funtrade.ui.service import (
     fetch_recommendations,
     fetch_portfolio_allocation,
     fetch_portfolio_overlay,
+    format_position_shares,
     momentum_trade_context,
     MODEL_AUTO,
     MODEL_MOMENTUM_BENCHMARK,
@@ -1082,11 +1083,16 @@ with tab_recommendations:
                 display = rec.copy()
                 if "position_assumed" in display.columns:
                     display["position_label"] = display.apply(
-                        lambda r: f"{r['position_shares']:.0f}*" if r.get("position_assumed") else f"{r['position_shares']:.0f}",
+                        lambda r: format_position_shares(
+                            float(r["position_shares"]),
+                            assumed=bool(r.get("position_assumed")),
+                        ),
                         axis=1,
                     )
                 else:
-                    display["position_label"] = display["position_shares"].map(lambda x: f"{x:.0f}")
+                    display["position_label"] = display["position_shares"].map(
+                        lambda x: format_position_shares(float(x)),
+                    )
 
                 display = display.rename(
                     columns={

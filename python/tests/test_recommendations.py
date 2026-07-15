@@ -1,8 +1,9 @@
 import pandas as pd
+import pytest
 from dataclasses import replace
 
 from funtrade.models.perturbation import signal_from_epsilon
-from funtrade.ui.service import _recommendation_note, _recommendation_position_qty, _sort_recommendations_by_position, default_ui_params, params_draft_pending
+from funtrade.ui.service import _recommendation_note, _recommendation_position_qty, _sort_recommendations_by_position, default_ui_params, format_position_shares, params_draft_pending
 
 
 def test_recommendation_signal_buy():
@@ -49,6 +50,29 @@ def test_recommendation_position_qty_uses_portfolio_value():
     )
     assert qty == 500.0
     assert assumed is False
+
+
+def test_recommendation_position_qty_prefers_portfolio_over_paper_dust():
+    qty, assumed = _recommendation_position_qty(
+        symbol="FONDSFINANS.UTBYTTE.B",
+        paper_qty=0.11,
+        assume_holding_all=False,
+        held_symbols=frozenset({"FONDSFINANS.UTBYTTE.B"}),
+        assumed_eur=1000.0,
+        price=32063.85,
+        portfolio_value=82363.0,
+    )
+    assert qty == pytest.approx(82363.0 / 32063.85)
+    assert assumed is False
+
+
+def test_format_position_shares_avoids_zero_rounding():
+    assert format_position_shares(0.11) == "0.11"
+    assert format_position_shares(2.57) == "2.6"
+    assert format_position_shares(89.7) == "89.7"
+    assert format_position_shares(150.0) == "150"
+    assert format_position_shares(0.0) == "0"
+    assert format_position_shares(10.0, assumed=True) == "10.0*"
 
 
 def test_sort_recommendations_by_position():
