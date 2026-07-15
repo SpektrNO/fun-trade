@@ -57,6 +57,31 @@ _REC_SELL_ROW = "background-color: #ffedd5; color: #c2410c"
 _RECOMMENDATIONS_TABLE_HEIGHT = 35 * 25 + 40
 
 
+def _default_portfolio_file_name(file_names: list[str]) -> str:
+    env_default = os.getenv("FUNTRADE_PORTFOLIO", "")
+    if env_default in file_names:
+        return env_default
+    if "portfolio_private.json" in file_names:
+        return "portfolio_private.json"
+    return file_names[0]
+
+
+def _portfolio_file_selectbox(file_names: list[str], *, widget_key: str) -> str:
+    """Portfolio selector synced across tabs via session state (unique widget keys)."""
+    default_name = _default_portfolio_file_name(file_names)
+    current = st.session_state.get("portfolio_file", default_name)
+    if current not in file_names:
+        current = default_name
+    selected = st.selectbox(
+        "Portfolio file",
+        file_names,
+        index=file_names.index(current),
+        key=widget_key,
+    )
+    st.session_state["portfolio_file"] = selected
+    return selected
+
+
 def _recommendation_row_styles(row: pd.Series) -> list[str]:
     action = row.get("Action")
     if action == "BUY":
@@ -446,20 +471,7 @@ with tab_portfolio:
         alloc = None
     else:
         file_names = [p.name for p in portfolio_files]
-        env_default = os.getenv("FUNTRADE_PORTFOLIO", "")
-        if env_default in file_names:
-            default_name = env_default
-        elif "portfolio_private.json" in file_names:
-            default_name = "portfolio_private.json"
-        else:
-            default_name = file_names[0]
-        if st.session_state.get("portfolio_file") not in file_names:
-            st.session_state["portfolio_file"] = default_name
-        selected_file = st.selectbox(
-            "Portfolio file",
-            file_names,
-            key="portfolio_file",
-        )
+        selected_file = _portfolio_file_selectbox(file_names, widget_key="portfolio_tab_file")
         selected_path = next(p for p in portfolio_files if p.name == selected_file)
         alloc = fetch_portfolio_allocation(selected_path)
         if alloc is None:
@@ -886,6 +898,20 @@ with tab_trade:
 
 with tab_recommendations:
     st.subheader("Recommendations")
+    portfolio_files = discover_portfolio_files()
+    rec_portfolio_path = None
+    limit_to_portfolio = True
+    if portfolio_files:
+        file_names = [p.name for p in portfolio_files]
+        selected_file = _portfolio_file_selectbox(file_names, widget_key="rec_portfolio_file")
+        rec_portfolio_path = next(p for p in portfolio_files if p.name == selected_file)
+        limit_to_portfolio = st.toggle(
+            "Limit to portfolio holdings",
+            value=bool(st.session_state.get("rec_limit_to_portfolio", True)),
+            help="Show signals only for symbols in the selected portfolio file.",
+            key="rec_limit_to_portfolio",
+        )
+
     _model_labels = {
         MODEL_PERTURBATION: "Perturbation (ε mean reversion)",
         MODEL_MOMENTUM_BENCHMARK: "Momentum benchmark (MA crossover)",
@@ -921,21 +947,45 @@ with tab_recommendations:
             "**sell** on crossunder when long. “Fast > slow” is **not** price vs MA — price can sit above both in a rally. "
             "Settings: `config.json` → `momentum_benchmark`."
         )
-    assume_holding_all = st.toggle(
-        "Assume I hold every symbol",
-        value=bool(st.session_state.get("rec_assume_holding_all", False)),
-        help="Treat each watchlist symbol as a long position (for your DNB portfolio). "
-        "Enables SELL / trend-gate notes when ε is high. "
-        "Momentum (scale mode): still BUY = add another slice while trend is up.",
-    )
+    assume_holding_all = False
+    if not limit_to_portfolio or not portfolio_files:
+        assume_holding_all = st.toggle(
+            "Assume I hold every symbol",
+            value=bool(st.session_state.get("rec_assume_holding_all", False)),
+            help="Treat each watchlist symbol as a long position. "
+            "Enables SELL / trend-gate notes when ε is high. "
+            "Momentum (scale mode): still BUY = add another slice while trend is up.",
+        )
+    elif rec_portfolio_path is not None:
+        st.caption(
+            "Treats each symbol in the selected portfolio as held (for SELL / trend-gate logic). "
+            "Uncheck **Limit to portfolio holdings** to scan the full watchlist."
+        )
     prev_assume = st.session_state.get("rec_assume_holding_all", False)
     if assume_holding_all != prev_assume:
         st.session_state.rec_assume_holding_all = assume_holding_all
 
-    if st.button("Refresh recommendations", type="primary") or assume_holding_all != prev_assume or rec_model != prev_model:
+    prev_portfolio = st.session_state.get("rec_portfolio_prev")
+    prev_limit = st.session_state.get("rec_limit_to_portfolio_prev", True)
+    current_portfolio = selected_file if portfolio_files else None
+    scope_changed = (
+        rec_model != prev_model
+        or assume_holding_all != prev_assume
+        or current_portfolio != prev_portfolio
+        or limit_to_portfolio != prev_limit
+    )
+    if portfolio_files:
+        st.session_state.rec_portfolio_prev = selected_file
+        st.session_state.rec_limit_to_portfolio_prev = limit_to_portfolio
+
+    if st.button("Refresh recommendations", type="primary") or scope_changed:
         try:
             st.session_state.recommendations_df = fetch_recommendations(
-                applied, assume_holding_all=assume_holding_all, model=rec_model,
+                applied,
+                assume_holding_all=assume_holding_all,
+                model=rec_model,
+                portfolio_path=rec_portfolio_path,
+                limit_to_portfolio=limit_to_portfolio,
             )
         except Exception as e:
             st.error(str(e))
@@ -943,8 +993,24 @@ with tab_recommendations:
     if "recommendations_df" in st.session_state:
         rec = st.session_state.recommendations_df
         if rec.empty:
-            st.warning("Watchlist is empty. Add symbols under `etf`, `mutual_fund`, or `share` in config.json.")
+            if rec.attrs.get("portfolio_file") and rec.attrs.get("limit_to_portfolio"):
+                st.warning(
+                    f"No holdings in **`{rec.attrs['portfolio_file']}`** "
+                    "or portfolio could not be loaded."
+                )
+            else:
+                st.warning("Watchlist is empty. Add symbols under `etf`, `mutual_fund`, or `share` in config.json.")
         else:
+            portfolio_name = rec.attrs.get("portfolio_name")
+            portfolio_file = rec.attrs.get("portfolio_file")
+            if portfolio_file and rec.attrs.get("limit_to_portfolio"):
+                title = portfolio_name or portfolio_file
+                st.caption(f"Showing holdings from **{title}** (`{portfolio_file}`).")
+            elif portfolio_file and portfolio_name:
+                st.caption(
+                    f"Full watchlist — portfolio holdings from **{portfolio_name}** "
+                    f"(`{portfolio_file}`) are treated as long positions."
+                )
             if rec.attrs.get("assume_holding_all"):
                 st.info(
                     "Showing signals **as if you hold each symbol** (paper qty where flat). "
@@ -971,6 +1037,7 @@ with tab_recommendations:
                 columns={
                     "symbol": "Symbol",
                     "asset_class": "Class",
+                    "portfolio_weight_pct": "Weight %",
                     "as_of": "As of",
                     "price": "Price",
                     "epsilon": "ε",
@@ -989,6 +1056,8 @@ with tab_recommendations:
                 }
             )
             show_cols = [c for c in display.columns if c not in ("signal", "position_shares", "position_assumed")]
+            if "Weight %" in show_cols and display["Weight %"].isna().all():
+                show_cols = [c for c in show_cols if c != "Weight %"]
             if rec_model == MODEL_MOMENTUM_BENCHMARK:
                 show_cols = [
                     c for c in show_cols
@@ -1009,6 +1078,7 @@ with tab_recommendations:
                 hide_index=True,
                 column_config={
                     "Price": st.column_config.NumberColumn(format="%.2f"),
+                    "Weight %": st.column_config.NumberColumn(format="%.2f"),
                     "ε": st.column_config.NumberColumn(format="%.3f"),
                     "ε thresh": st.column_config.NumberColumn(format="%.2f"),
                     "Regime OK": st.column_config.CheckboxColumn(),

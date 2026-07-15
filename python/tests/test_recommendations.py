@@ -44,6 +44,37 @@ def test_params_draft_pending_detects_sidebar_changes():
     assert params_draft_pending(base, changed)
 
 
+def test_resolve_recommendation_scope_limits_to_portfolio(tmp_path, monkeypatch):
+    import json
+
+    from funtrade.ui.service import resolve_recommendation_scope
+
+    monkeypatch.setattr("funtrade.portfolio_config.repo_root", lambda: tmp_path)
+    path = tmp_path / "portfolio_private.json"
+    path.write_text(
+        json.dumps(
+            {
+                "name": "Private",
+                "valuation_mode": "weight_pct",
+                "holdings": [
+                    {"symbol": "VWCE.DE", "weight_pct": 60.0},
+                    {"symbol": "AGGH.DE", "weight_pct": 40.0},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    scoped = resolve_recommendation_scope(path, limit_to_portfolio=True)
+    assert scoped.symbols == ["VWCE.DE", "AGGH.DE"]
+    assert scoped.held_symbols == frozenset({"VWCE.DE", "AGGH.DE"})
+    assert scoped.portfolio_weights == {"VWCE.DE": 60.0, "AGGH.DE": 40.0}
+    assert scoped.portfolio_name == "Private"
+
+    full = resolve_recommendation_scope(path, limit_to_portfolio=False)
+    assert full.symbols is None
+    assert full.held_symbols == frozenset({"VWCE.DE", "AGGH.DE"})
+
+
 def test_auto_recommendations_use_momentum_when_trending(monkeypatch):
     from funtrade.ui import service as svc
 
