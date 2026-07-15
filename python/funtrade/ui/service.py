@@ -41,6 +41,7 @@ from funtrade.models.perturbation import (
     trend_signal_kwargs,
 )
 from funtrade.portfolio.allocation import PortfolioAllocationResult, compute_portfolio_allocation
+from funtrade.portfolio.overlay import build_portfolio_overlay
 from funtrade.portfolio_config import load_portfolio_config
 from funtrade.ui.plotting.data import build_momentum_price_overlay
 
@@ -212,25 +213,40 @@ class RecommendationScope:
     symbols: list[str] | None
     held_symbols: frozenset[str]
     portfolio_weights: dict[str, float]
+    portfolio_shares: dict[str, float]
+    portfolio_values: dict[str, float]
     portfolio_name: str | None
     portfolio_file: str | None
+
+
+def _portfolio_position_maps(portfolio) -> tuple[dict[str, float], dict[str, float]]:
+    shares: dict[str, float] = {}
+    values: dict[str, float] = {}
+    for h in portfolio.holdings:
+        if h.shares is not None:
+            shares[h.symbol] = float(h.shares)
+        if h.value_eur is not None:
+            values[h.symbol] = float(h.value_eur)
+    return shares, values
 
 
 def resolve_recommendation_scope(
     portfolio_path: Path | str | None = None,
     *,
     limit_to_portfolio: bool = True,
+    watchlist: list[str] | None = None,
 ) -> RecommendationScope:
     """Resolve symbol filter and assumed holdings from an optional portfolio file."""
+    empty = RecommendationScope(None, frozenset(), {}, {}, {}, None, None)
     if portfolio_path is None:
-        return RecommendationScope(None, frozenset(), {}, None, None)
+        return empty
 
     portfolio = load_portfolio_config(portfolio_path)
     if portfolio is None:
-        return RecommendationScope([], frozenset(), {}, None, Path(portfolio_path).name)
+        return RecommendationScope([], frozenset(), {}, {}, {}, None, Path(portfolio_path).name)
 
-    symbols = list(portfolio.symbols())
-    held = frozenset(symbols)
+    portfolio_symbols = list(portfolio.symbols())
+    held = frozenset(portfolio_symbols)
     weights: dict[str, float] = {}
     if portfolio.valuation_mode == "weight_pct":
         total = portfolio.total_weight_pct()
@@ -238,10 +254,18 @@ def resolve_recommendation_scope(
         for h in portfolio.holdings:
             weights[h.symbol] = round((h.weight_pct or 0.0) * scale, 2)
 
+    portfolio_shares, portfolio_values = _portfolio_position_maps(portfolio)
     source = portfolio.source_path.name if portfolio.source_path else Path(portfolio_path).name
     if limit_to_portfolio:
-        return RecommendationScope(symbols, held, weights, portfolio.name, source)
-    return RecommendationScope(None, held, weights, portfolio.name, source)
+        wl = list(watchlist or [])
+        extra = [s for s in wl if s not in held]
+        symbols = portfolio_symbols + extra
+        return RecommendationScope(
+            symbols, held, weights, portfolio_shares, portfolio_values, portfolio.name, source,
+        )
+    return RecommendationScope(
+        None, held, weights, portfolio_shares, portfolio_values, portfolio.name, source,
+    )
 
 
 def fetch_recommendations(
@@ -253,17 +277,22 @@ def fetch_recommendations(
     limit_to_portfolio: bool = True,
 ) -> pd.DataFrame:
     """Latest model hints for watchlist or portfolio holdings (Nordnet manual trading)."""
+    base = Settings.from_env()
     scope = resolve_recommendation_scope(
         portfolio_path,
         limit_to_portfolio=limit_to_portfolio,
+        watchlist=base.watchlist,
     )
     kwargs = {
         "assume_holding_all": assume_holding_all,
         "symbols": scope.symbols,
         "held_symbols": scope.held_symbols,
         "portfolio_weights": scope.portfolio_weights,
+        "portfolio_shares": scope.portfolio_shares,
+        "portfolio_values": scope.portfolio_values,
         "portfolio_name": scope.portfolio_name,
         "portfolio_file": scope.portfolio_file,
+        "limit_to_portfolio": limit_to_portfolio,
     }
     if model == MODEL_MOMENTUM_BENCHMARK:
         return _fetch_momentum_recommendations(params, **kwargs)
@@ -280,12 +309,35 @@ def _recommendation_position_qty(
     held_symbols: frozenset[str],
     assumed_eur: float,
     price: float,
+    portfolio_shares: float | None = None,
+    portfolio_value: float | None = None,
 ) -> tuple[float, bool]:
-    assume_held = assume_holding_all or symbol in held_symbols
-    pos_assumed = assume_held and paper_qty <= 0
+    if paper_qty > 0:
+        return paper_qty, False
+
+    in_portfolio = symbol in held_symbols
+    assume_held = assume_holding_all or in_portfolio
+    if not assume_held:
+        return 0.0, False
+
+    if portfolio_shares is not None and portfolio_shares > 0:
+        return portfolio_shares, False
+
+    if portfolio_value is not None and portfolio_value > 0 and price > 0:
+        return portfolio_value / price, False
+
     assumed_qty = assumed_eur / price if price > 0 else assumed_eur / 100.0
-    pos_qty = paper_qty if paper_qty > 0 else (assumed_qty if assume_held else 0.0)
-    return pos_qty, pos_assumed
+    return assumed_qty, True
+
+
+def _sort_recommendations_by_position(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "position_shares" not in df.columns:
+        return df
+    return df.sort_values(
+        ["position_shares", "symbol"],
+        ascending=[False, True],
+        na_position="last",
+    ).reset_index(drop=True)
 
 
 def _attach_recommendation_scope_attrs(
@@ -314,14 +366,19 @@ def _fetch_perturbation_recommendations(
     symbols: list[str] | None = None,
     held_symbols: frozenset[str] | None = None,
     portfolio_weights: dict[str, float] | None = None,
+    portfolio_shares: dict[str, float] | None = None,
+    portfolio_values: dict[str, float] | None = None,
     portfolio_name: str | None = None,
     portfolio_file: str | None = None,
+    limit_to_portfolio: bool = False,
 ) -> pd.DataFrame:
     """Apply BUY/SELL rules to latest persisted ε rows (no full-series recompute)."""
     base = Settings.from_env()
     watchlist = base.watchlist
     held = held_symbols or frozenset()
     weights = portfolio_weights or {}
+    shares_map = portfolio_shares or {}
+    values_map = portfolio_values or {}
     if symbols is not None:
         symbols_list = list(symbols)
     else:
@@ -350,11 +407,14 @@ def _fetch_perturbation_recommendations(
                 held_symbols=held,
                 assumed_eur=assumed_eur,
                 price=100.0,
+                portfolio_shares=shares_map.get(symbol),
+                portfolio_value=values_map.get(symbol),
             )
             rows.append(
                 {
                     "symbol": symbol,
                     "asset_class": sym_settings.asset_class or "etf",
+                    "in_portfolio": symbol in held,
                     "portfolio_weight_pct": weights.get(symbol),
                     "as_of": None,
                     "price": None,
@@ -382,6 +442,8 @@ def _fetch_perturbation_recommendations(
             held_symbols=held,
             assumed_eur=assumed_eur,
             price=price,
+            portfolio_shares=shares_map.get(symbol),
+            portfolio_value=values_map.get(symbol),
         )
         z_trend = float(p.z_trend) if p.z_trend is not None else 0.0
         threshold = sym_settings.epsilon_threshold
@@ -397,6 +459,7 @@ def _fetch_perturbation_recommendations(
             {
                 "symbol": symbol,
                 "asset_class": p.asset_class,
+                "in_portfolio": symbol in held,
                 "portfolio_weight_pct": weights.get(symbol),
                 "as_of": p.time.strftime("%Y-%m-%d") if hasattr(p.time, "strftime") else str(p.time),
                 "price": price,
@@ -424,6 +487,7 @@ def _fetch_perturbation_recommendations(
         )
 
     df = pd.DataFrame(rows)
+    df = _sort_recommendations_by_position(df)
     if errors and not df.empty:
         df.attrs["errors"] = errors
     _attach_recommendation_scope_attrs(
@@ -433,7 +497,7 @@ def _fetch_perturbation_recommendations(
         portfolio_weights=weights,
         portfolio_name=portfolio_name,
         portfolio_file=portfolio_file,
-        limit_to_portfolio=symbols is not None,
+        limit_to_portfolio=limit_to_portfolio,
     )
     df.attrs["model"] = MODEL_PERTURBATION
     if latest_detect is not None:
@@ -448,13 +512,18 @@ def _fetch_momentum_recommendations(
     symbols: list[str] | None = None,
     held_symbols: frozenset[str] | None = None,
     portfolio_weights: dict[str, float] | None = None,
+    portfolio_shares: dict[str, float] | None = None,
+    portfolio_values: dict[str, float] | None = None,
     portfolio_name: str | None = None,
     portfolio_file: str | None = None,
+    limit_to_portfolio: bool = False,
 ) -> pd.DataFrame:
     """MA crossover + momentum benchmark recommendations."""
     base = Settings.from_env()
     held = held_symbols or frozenset()
     weights = portfolio_weights or {}
+    shares_map = portfolio_shares or {}
+    values_map = portfolio_values or {}
     if symbols is not None:
         symbols_list = list(symbols)
     else:
@@ -484,11 +553,14 @@ def _fetch_momentum_recommendations(
                 held_symbols=held,
                 assumed_eur=assumed_eur,
                 price=100.0,
+                portfolio_shares=shares_map.get(symbol),
+                portfolio_value=values_map.get(symbol),
             )
             rows.append(
                 {
                     "symbol": symbol,
                     "asset_class": sym_settings.asset_class or "etf",
+                    "in_portfolio": symbol in held,
                     "portfolio_weight_pct": weights.get(symbol),
                     "as_of": None,
                     "price": None,
@@ -513,6 +585,8 @@ def _fetch_momentum_recommendations(
             held_symbols=held,
             assumed_eur=assumed_eur,
             price=price,
+            portfolio_shares=shares_map.get(symbol),
+            portfolio_value=values_map.get(symbol),
         )
         sig = momentum_backtest_signal(
             fast_ma=p.fast_ma,
@@ -525,6 +599,7 @@ def _fetch_momentum_recommendations(
             {
                 "symbol": symbol,
                 "asset_class": p.asset_class,
+                "in_portfolio": symbol in held,
                 "portfolio_weight_pct": weights.get(symbol),
                 "as_of": p.time.strftime("%Y-%m-%d") if hasattr(p.time, "strftime") else str(p.time),
                 "price": price,
@@ -550,6 +625,7 @@ def _fetch_momentum_recommendations(
         )
 
     df = pd.DataFrame(rows)
+    df = _sort_recommendations_by_position(df)
     if errors and not df.empty:
         df.attrs["errors"] = errors
     _attach_recommendation_scope_attrs(
@@ -559,7 +635,7 @@ def _fetch_momentum_recommendations(
         portfolio_weights=weights,
         portfolio_name=portfolio_name,
         portfolio_file=portfolio_file,
-        limit_to_portfolio=symbols is not None,
+        limit_to_portfolio=limit_to_portfolio,
     )
     df.attrs["model"] = MODEL_MOMENTUM_BENCHMARK
     return df
@@ -578,8 +654,11 @@ def _fetch_auto_recommendations(
     symbols: list[str] | None = None,
     held_symbols: frozenset[str] | None = None,
     portfolio_weights: dict[str, float] | None = None,
+    portfolio_shares: dict[str, float] | None = None,
+    portfolio_values: dict[str, float] | None = None,
     portfolio_name: str | None = None,
     portfolio_file: str | None = None,
+    limit_to_portfolio: bool = False,
 ) -> pd.DataFrame:
     """Route each symbol to perturbation or momentum by latest market regime."""
     scope_kwargs = {
@@ -587,8 +666,11 @@ def _fetch_auto_recommendations(
         "symbols": symbols,
         "held_symbols": held_symbols,
         "portfolio_weights": portfolio_weights,
+        "portfolio_shares": portfolio_shares,
+        "portfolio_values": portfolio_values,
         "portfolio_name": portfolio_name,
         "portfolio_file": portfolio_file,
+        "limit_to_portfolio": limit_to_portfolio,
     }
     pert_df = _fetch_perturbation_recommendations(params, **scope_kwargs)
     mom_df = _fetch_momentum_recommendations(params, **scope_kwargs)
@@ -665,6 +747,7 @@ def _fetch_auto_recommendations(
             )
 
     df = pd.DataFrame(rows)
+    df = _sort_recommendations_by_position(df)
     if pert_df.attrs.get("errors"):
         df.attrs["errors"] = pert_df.attrs["errors"]
     _attach_recommendation_scope_attrs(
@@ -674,7 +757,7 @@ def _fetch_auto_recommendations(
         portfolio_weights=portfolio_weights or {},
         portfolio_name=portfolio_name,
         portfolio_file=portfolio_file,
-        limit_to_portfolio=symbols is not None,
+        limit_to_portfolio=limit_to_portfolio,
     )
     df.attrs["model"] = MODEL_AUTO
     if pert_df.attrs.get("detected_at"):
@@ -935,6 +1018,26 @@ def fetch_portfolio_allocation(
     """Look-through allocation from portfolio JSON + fund_profiles/."""
     portfolio = load_portfolio_config(portfolio_path)
     return compute_portfolio_allocation(portfolio)
+
+
+def fetch_portfolio_overlay(
+    params: UiParams,
+    *,
+    portfolio_path: Path | str | None,
+    max_adds: int = 3,
+    max_trims: int = 2,
+    model: str = MODEL_PERTURBATION,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """ε-ranked add/trim hints for portfolio holdings + full recommendations."""
+    rec = fetch_recommendations(
+        params,
+        assume_holding_all=False,
+        model=model,
+        portfolio_path=portfolio_path,
+        limit_to_portfolio=True,
+    )
+    overlay = build_portfolio_overlay(rec, max_adds=max_adds, max_trims=max_trims)
+    return overlay, rec
 
 
 def watchlist_with_class(settings: Settings | None = None) -> list[tuple[str, str]]:

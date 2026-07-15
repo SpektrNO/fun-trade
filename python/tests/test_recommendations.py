@@ -2,7 +2,7 @@ import pandas as pd
 from dataclasses import replace
 
 from funtrade.models.perturbation import signal_from_epsilon
-from funtrade.ui.service import _recommendation_note, default_ui_params, params_draft_pending
+from funtrade.ui.service import _recommendation_note, _recommendation_position_qty, _sort_recommendations_by_position, default_ui_params, params_draft_pending
 
 
 def test_recommendation_signal_buy():
@@ -37,6 +37,32 @@ def test_recommendation_signal_blocked_by_regime():
     assert note == "Buy blocked (regime)"
 
 
+def test_recommendation_position_qty_uses_portfolio_value():
+    qty, assumed = _recommendation_position_qty(
+        symbol="VWCE.DE",
+        paper_qty=0.0,
+        assume_holding_all=False,
+        held_symbols=frozenset({"VWCE.DE"}),
+        assumed_eur=1000.0,
+        price=100.0,
+        portfolio_value=50000.0,
+    )
+    assert qty == 500.0
+    assert assumed is False
+
+
+def test_sort_recommendations_by_position():
+    df = pd.DataFrame(
+        [
+            {"symbol": "A", "position_shares": 0.0},
+            {"symbol": "B", "position_shares": 100.0},
+            {"symbol": "C", "position_shares": 50.0},
+        ]
+    )
+    sorted_df = _sort_recommendations_by_position(df)
+    assert list(sorted_df["symbol"]) == ["B", "C", "A"]
+
+
 def test_params_draft_pending_detects_sidebar_changes():
     base = default_ui_params("VWCE.DE")
     changed = replace(base, epsilon_threshold=base.epsilon_threshold + 0.1)
@@ -64,13 +90,17 @@ def test_resolve_recommendation_scope_limits_to_portfolio(tmp_path, monkeypatch)
         ),
         encoding="utf-8",
     )
-    scoped = resolve_recommendation_scope(path, limit_to_portfolio=True)
-    assert scoped.symbols == ["VWCE.DE", "AGGH.DE"]
+    scoped = resolve_recommendation_scope(
+        path, limit_to_portfolio=True, watchlist=["VWCE.DE", "AGGH.DE", "EUNL.DE"],
+    )
+    assert scoped.symbols == ["VWCE.DE", "AGGH.DE", "EUNL.DE"]
     assert scoped.held_symbols == frozenset({"VWCE.DE", "AGGH.DE"})
     assert scoped.portfolio_weights == {"VWCE.DE": 60.0, "AGGH.DE": 40.0}
     assert scoped.portfolio_name == "Private"
 
-    full = resolve_recommendation_scope(path, limit_to_portfolio=False)
+    full = resolve_recommendation_scope(
+        path, limit_to_portfolio=False, watchlist=["VWCE.DE", "AGGH.DE", "EUNL.DE"],
+    )
     assert full.symbols is None
     assert full.held_symbols == frozenset({"VWCE.DE", "AGGH.DE"})
 

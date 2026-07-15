@@ -28,6 +28,7 @@ from funtrade.ui.service import (
     default_ui_params,
     fetch_recommendations,
     fetch_portfolio_allocation,
+    fetch_portfolio_overlay,
     momentum_trade_context,
     MODEL_AUTO,
     MODEL_MOMENTUM_BENCHMARK,
@@ -83,10 +84,10 @@ def _portfolio_file_selectbox(file_names: list[str], *, widget_key: str) -> str:
 
 
 def _recommendation_row_styles(row: pd.Series) -> list[str]:
-    action = row.get("Action")
-    if action == "BUY":
+    action = row.get("Action") or row.get("overlay_action")
+    if action in ("BUY", "Add (dip)"):
         css = _REC_BUY_ROW
-    elif action == "SELL":
+    elif action in ("SELL", "Trim (rich)"):
         css = _REC_SELL_ROW
     else:
         return [""] * len(row)
@@ -898,6 +899,11 @@ with tab_trade:
 
 with tab_recommendations:
     st.subheader("Recommendations")
+    st.caption(
+        "Tactical hints for **your portfolio holdings** — not fund-to-fund target weights. "
+        "When limited to a portfolio file, shows the **top ε-ranked** add/trim ideas among "
+        "what you already hold; core strategy stays buy-and-hold."
+    )
     portfolio_files = discover_portfolio_files()
     rec_portfolio_path = None
     limit_to_portfolio = True
@@ -908,7 +914,7 @@ with tab_recommendations:
         limit_to_portfolio = st.toggle(
             "Limit to portfolio holdings",
             value=bool(st.session_state.get("rec_limit_to_portfolio", True)),
-            help="Show signals only for symbols in the selected portfolio file.",
+            help="Only your strategic holdings — skips the full ETF watchlist.",
             key="rec_limit_to_portfolio",
         )
 
@@ -929,37 +935,33 @@ with tab_recommendations:
         st.session_state.rec_model_prev = rec_model
         st.session_state.pop("recommendations_df", None)
 
-    if rec_model == MODEL_PERTURBATION:
+    if rec_model == MODEL_PERTURBATION and limit_to_portfolio and portfolio_files:
         st.caption(
-            "Reads latest **ε** and **regime_valid** from the database (last detect/refresh), "
-            "then applies each asset class’s threshold — no full recompute. "
-            "Use sidebar **Run refresh** to update ε. Act on **BUY** / **SELL** only."
+            "Highlights up to **3** deepest dips and **2** richest names vs fair value among your holdings. "
+            "The full table lists portfolio holdings by position size, then watchlist symbols you don't hold."
         )
+    elif rec_model == MODEL_PERTURBATION:
+        st.caption("Reads latest **ε** from detect. Limit to portfolio holdings for a shorter ranked view.")
     elif rec_model == MODEL_AUTO:
         st.caption(
             "Per-symbol **regime router** (`strategy_router` in config.json): "
-            "**trending** → momentum (MA crossover); **ranging** → perturbation (ε mean-reversion). "
-            "Run **Run refresh** / `make detect` to persist regime labels."
+            "**trending** → momentum; **ranging** → perturbation."
         )
     else:
         st.caption(
-            "Dual **MA crossover** benchmark: **buy** when fast MA > slow MA and 63-day momentum is positive; "
-            "**sell** on crossunder when long. “Fast > slow” is **not** price vs MA — price can sit above both in a rally. "
-            "Settings: `config.json` → `momentum_benchmark`."
+            "MA crossover benchmark — **buy** when fast MA > slow MA with positive 63-day momentum."
         )
     assume_holding_all = False
     if not limit_to_portfolio or not portfolio_files:
         assume_holding_all = st.toggle(
             "Assume I hold every symbol",
             value=bool(st.session_state.get("rec_assume_holding_all", False)),
-            help="Treat each watchlist symbol as a long position. "
-            "Enables SELL / trend-gate notes when ε is high. "
-            "Momentum (scale mode): still BUY = add another slice while trend is up.",
+            help="Treat each watchlist symbol as a long position (enables SELL notes when ε is high).",
         )
     elif rec_portfolio_path is not None:
         st.caption(
-            "Treats each symbol in the selected portfolio as held (for SELL / trend-gate logic). "
-            "Uncheck **Limit to portfolio holdings** to scan the full watchlist."
+            "Portfolio holdings are treated as long positions for trim / trend-gate logic. "
+            "Position size is estimated from your portfolio file (value ÷ latest price) when not in the paper wallet."
         )
     prev_assume = st.session_state.get("rec_assume_holding_all", False)
     if assume_holding_all != prev_assume:
@@ -980,13 +982,23 @@ with tab_recommendations:
 
     if st.button("Refresh recommendations", type="primary") or scope_changed:
         try:
-            st.session_state.recommendations_df = fetch_recommendations(
-                applied,
-                assume_holding_all=assume_holding_all,
-                model=rec_model,
-                portfolio_path=rec_portfolio_path,
-                limit_to_portfolio=limit_to_portfolio,
-            )
+            if limit_to_portfolio and rec_model == MODEL_PERTURBATION and rec_portfolio_path is not None:
+                overlay, rec = fetch_portfolio_overlay(
+                    applied,
+                    portfolio_path=rec_portfolio_path,
+                    model=rec_model,
+                )
+                st.session_state.recommendations_df = rec
+                st.session_state.portfolio_overlay_df = overlay
+            else:
+                st.session_state.recommendations_df = fetch_recommendations(
+                    applied,
+                    assume_holding_all=assume_holding_all,
+                    model=rec_model,
+                    portfolio_path=rec_portfolio_path,
+                    limit_to_portfolio=limit_to_portfolio,
+                )
+                st.session_state.pop("portfolio_overlay_df", None)
         except Exception as e:
             st.error(str(e))
 
@@ -1003,100 +1015,143 @@ with tab_recommendations:
         else:
             portfolio_name = rec.attrs.get("portfolio_name")
             portfolio_file = rec.attrs.get("portfolio_file")
-            if portfolio_file and rec.attrs.get("limit_to_portfolio"):
-                title = portfolio_name or portfolio_file
-                st.caption(f"Showing holdings from **{title}** (`{portfolio_file}`).")
-            elif portfolio_file and portfolio_name:
-                st.caption(
-                    f"Full watchlist — portfolio holdings from **{portfolio_name}** "
-                    f"(`{portfolio_file}`) are treated as long positions."
-                )
-            if rec.attrs.get("assume_holding_all"):
-                st.info(
-                    "Showing signals **as if you hold each symbol** (paper qty where flat). "
-                    "Rows marked *assumed* are not in the paper wallet."
-                )
-            n_buy = int((rec["action"] == "BUY").sum()) if "action" in rec.columns else 0
-            n_sell = int((rec["action"] == "SELL").sum()) if "action" in rec.columns else 0
-            n_hold = int((rec["action"] == "HOLD").sum()) if "action" in rec.columns else 0
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Buy", n_buy)
-            m2.metric("Sell", n_sell)
-            m3.metric("Hold", n_hold)
+            overlay_df = st.session_state.get("portfolio_overlay_df")
 
-            display = rec.copy()
-            if "position_assumed" in display.columns:
-                display["position_label"] = display.apply(
-                    lambda r: f"{r['position_shares']:.0f}*" if r.get("position_assumed") else f"{r['position_shares']:.0f}",
-                    axis=1,
-                )
-            else:
-                display["position_label"] = display["position_shares"].map(lambda x: f"{x:.0f}")
+            if overlay_df is not None:
+                if not overlay_df.empty:
+                    title = portfolio_name or portfolio_file or "portfolio"
+                    st.markdown(f"**Top hints** — {title}")
+                    n_add = int((overlay_df["overlay_action"] == "Add (dip)").sum())
+                    n_trim = int((overlay_df["overlay_action"] == "Trim (rich)").sum())
+                    o1, o2 = st.columns(2)
+                    o1.metric("Add (dip)", n_add)
+                    o2.metric("Trim (rich)", n_trim)
+                    overlay_display = overlay_df.rename(
+                        columns={
+                            "symbol": "Symbol",
+                            "overlay_action": "Hint",
+                            "overlay_detail": "Rationale",
+                            "portfolio_weight_pct": "Weight %",
+                            "epsilon": "ε",
+                            "action": "Raw signal",
+                        }
+                    )
+                    overlay_cols = [
+                        c for c in ["Symbol", "Hint", "Rationale", "Weight %", "ε", "Raw signal"]
+                        if c in overlay_display.columns
+                    ]
+                    st.dataframe(
+                        overlay_display[overlay_cols].style.apply(_recommendation_row_styles, axis=1),
+                        width="stretch",
+                        hide_index=True,
+                        column_config={
+                            "Weight %": st.column_config.NumberColumn(format="%.2f"),
+                            "ε": st.column_config.NumberColumn(format="%.3f"),
+                        },
+                    )
+                else:
+                    st.success(
+                        "Nothing stands out this week — all holdings inside ε bands or not in the top ranks. "
+                        "Stay on your normal buy-and-hold plan."
+                    )
 
-            display = display.rename(
-                columns={
-                    "symbol": "Symbol",
-                    "asset_class": "Class",
-                    "portfolio_weight_pct": "Weight %",
-                    "as_of": "As of",
-                    "price": "Price",
-                    "epsilon": "ε",
-                    "threshold": "ε thresh",
-                    "regime_valid": "Regime OK",
-                    "z_trend": "z_trend",
-                    "market_regime": "Regime",
-                    "selected_model": "Strategy",
-                    "fast_ma": "Fast MA",
-                    "slow_ma": "Slow MA",
-                    "momentum_pct": "Momentum %",
-                    "ma_bullish": "Fast > slow",
-                    "position_label": "Position",
-                    "action": "Action",
-                    "note": "Note",
-                }
-            )
-            show_cols = [c for c in display.columns if c not in ("signal", "position_shares", "position_assumed")]
-            if "Weight %" in show_cols and display["Weight %"].isna().all():
-                show_cols = [c for c in show_cols if c != "Weight %"]
-            if rec_model == MODEL_MOMENTUM_BENCHMARK:
-                show_cols = [
-                    c for c in show_cols
-                    if c not in ("ε", "ε thresh", "Regime OK", "z_trend", "Regime", "Strategy")
-                ]
-            elif rec_model == MODEL_AUTO:
-                pass
-            else:
-                show_cols = [
-                    c for c in show_cols
-                    if c not in ("Fast MA", "Slow MA", "Momentum %", "Fast > slow", "Regime", "Strategy")
-                ]
-            table = display[show_cols]
-            st.dataframe(
-                table.style.apply(_recommendation_row_styles, axis=1),
-                width="stretch",
-                height=_RECOMMENDATIONS_TABLE_HEIGHT,
-                hide_index=True,
-                column_config={
-                    "Price": st.column_config.NumberColumn(format="%.2f"),
-                    "Weight %": st.column_config.NumberColumn(format="%.2f"),
-                    "ε": st.column_config.NumberColumn(format="%.3f"),
-                    "ε thresh": st.column_config.NumberColumn(format="%.2f"),
-                    "Regime OK": st.column_config.CheckboxColumn(),
-                    "Fast MA": st.column_config.NumberColumn(format="%.2f"),
-                    "Slow MA": st.column_config.NumberColumn(format="%.2f"),
-                    "Momentum %": st.column_config.NumberColumn(format="%.1f"),
-                    "Fast > slow": st.column_config.CheckboxColumn(),
-                },
-            )
-            if rec.attrs.get("assume_holding_all"):
-                st.caption("*Assumed holding (not in paper wallet). Qty ≈ one trade slice (PAPER_TRADE_SLICE_PCT).")
-            detected_at = rec.attrs.get("detected_at")
-            if detected_at and rec.attrs.get("model") in (MODEL_PERTURBATION, MODEL_AUTO):
-                st.caption(f"ε snapshot from detect run at **{detected_at}** UTC.")
-            errors = rec.attrs.get("errors", [])
-            if errors:
-                st.warning(
-                    f"No persisted ε for: {', '.join(errors)} — run sidebar **Run refresh** or `make detect`."
+            with st.expander("All raw signals", expanded=overlay_df is None or overlay_df.empty):
+                if portfolio_file and rec.attrs.get("limit_to_portfolio"):
+                    title = portfolio_name or portfolio_file
+                    st.caption(
+                        f"**{title}** holdings first (sorted by position size), "
+                        "then other watchlist symbols with no position."
+                    )
+                elif portfolio_file and portfolio_name:
+                    st.caption(
+                        f"Full watchlist — portfolio holdings from **{portfolio_name}** treated as long."
+                    )
+                if rec.attrs.get("assume_holding_all"):
+                    st.info(
+                        "Showing signals **as if you hold each symbol** (paper qty where flat). "
+                        "Rows marked *assumed* are not in the paper wallet."
+                    )
+                n_buy = int((rec["action"] == "BUY").sum()) if "action" in rec.columns else 0
+                n_sell = int((rec["action"] == "SELL").sum()) if "action" in rec.columns else 0
+                n_hold = int((rec["action"] == "HOLD").sum()) if "action" in rec.columns else 0
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Buy", n_buy)
+                m2.metric("Sell", n_sell)
+                m3.metric("Hold", n_hold)
+
+                display = rec.copy()
+                if "position_assumed" in display.columns:
+                    display["position_label"] = display.apply(
+                        lambda r: f"{r['position_shares']:.0f}*" if r.get("position_assumed") else f"{r['position_shares']:.0f}",
+                        axis=1,
+                    )
+                else:
+                    display["position_label"] = display["position_shares"].map(lambda x: f"{x:.0f}")
+
+                display = display.rename(
+                    columns={
+                        "symbol": "Symbol",
+                        "asset_class": "Class",
+                        "portfolio_weight_pct": "Weight %",
+                        "as_of": "As of",
+                        "price": "Price",
+                        "epsilon": "ε",
+                        "threshold": "ε thresh",
+                        "regime_valid": "Regime OK",
+                        "z_trend": "z_trend",
+                        "market_regime": "Regime",
+                        "selected_model": "Strategy",
+                        "fast_ma": "Fast MA",
+                        "slow_ma": "Slow MA",
+                        "momentum_pct": "Momentum %",
+                        "ma_bullish": "Fast > slow",
+                        "position_label": "Position",
+                        "action": "Action",
+                        "note": "Note",
+                    }
                 )
+                show_cols = [c for c in display.columns if c not in ("signal", "position_shares", "position_assumed", "in_portfolio")]
+                if "Weight %" in show_cols and display["Weight %"].isna().all():
+                    show_cols = [c for c in show_cols if c != "Weight %"]
+                if rec_model == MODEL_MOMENTUM_BENCHMARK:
+                    show_cols = [
+                        c for c in show_cols
+                        if c not in ("ε", "ε thresh", "Regime OK", "z_trend", "Regime", "Strategy")
+                    ]
+                elif rec_model == MODEL_AUTO:
+                    pass
+                else:
+                    show_cols = [
+                        c for c in show_cols
+                        if c not in ("Fast MA", "Slow MA", "Momentum %", "Fast > slow", "Regime", "Strategy")
+                    ]
+                table = display[show_cols]
+                st.dataframe(
+                    table.style.apply(_recommendation_row_styles, axis=1),
+                    width="stretch",
+                    height=min(_RECOMMENDATIONS_TABLE_HEIGHT, 35 * len(table) + 40),
+                    hide_index=True,
+                    column_config={
+                        "Price": st.column_config.NumberColumn(format="%.2f"),
+                        "Weight %": st.column_config.NumberColumn(format="%.2f"),
+                        "ε": st.column_config.NumberColumn(format="%.3f"),
+                        "ε thresh": st.column_config.NumberColumn(format="%.2f"),
+                        "Regime OK": st.column_config.CheckboxColumn(),
+                        "Fast MA": st.column_config.NumberColumn(format="%.2f"),
+                        "Slow MA": st.column_config.NumberColumn(format="%.2f"),
+                        "Momentum %": st.column_config.NumberColumn(format="%.1f"),
+                        "Fast > slow": st.column_config.CheckboxColumn(),
+                    },
+                )
+                if rec.attrs.get("assume_holding_all"):
+                    st.caption("*Assumed holding (not in paper wallet). Qty ≈ one trade slice (PAPER_TRADE_SLICE_PCT).")
+                detected_at = rec.attrs.get("detected_at")
+                if detected_at and rec.attrs.get("model") in (MODEL_PERTURBATION, MODEL_AUTO):
+                    st.caption(f"ε snapshot from detect run at **{detected_at}** UTC.")
+                errors = rec.attrs.get("errors", [])
+                if errors:
+                    st.warning(
+                        f"No persisted ε for: {', '.join(errors)} — run sidebar **Run refresh** or `make detect`."
+                    )
     else:
-        st.info("Click **Refresh recommendations** to load the watchlist.")
+        st.info("Click **Refresh recommendations** to load hints for your portfolio.")
