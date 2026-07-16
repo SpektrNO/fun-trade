@@ -41,8 +41,11 @@ def _chart_key(*parts: str) -> str:
     return key
 
 
-def _show(fig: go.Figure, *, key: str) -> None:
-    fig.update_layout(**_LAYOUT)
+def _show(fig: go.Figure, *, key: str, height: int | None = None) -> None:
+    layout = dict(_LAYOUT)
+    if height is not None:
+        layout["height"] = height
+    fig.update_layout(**layout)
     fig.update_xaxes(**_AXIS_ZOOMABLE)
     fig.update_yaxes(**_AXIS_ZOOMABLE)
     st.plotly_chart(fig, width="stretch", key=key)
@@ -146,8 +149,8 @@ def _price_rsi_figure(
         rows=2,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.08,
-        row_heights=[0.62, 0.38],
+        vertical_spacing=0.06,
+        row_heights=[0.58, 0.42],
         subplot_titles=(f"Price ({currency})", f"RSI ({period})"),
     )
 
@@ -257,7 +260,8 @@ class PlotlyRenderer(ChartRenderer):
     ) -> None:
         if title:
             st.subheader(title)
-        if rsi_chart is not None and not rsi_chart.empty and rsi_params is not None:
+        has_rsi = rsi_chart is not None and not rsi_chart.empty and rsi_params is not None
+        if has_rsi:
             st.caption(price_rsi_caption(rsi_params=rsi_params, currency=currency))
         elif len(price_cols) > 1:
             st.caption("Solid: price and moving averages.")
@@ -270,6 +274,8 @@ class PlotlyRenderer(ChartRenderer):
                 currency=currency,
             ),
             key=_chart_key("price-rsi", chart_key or title or "price-rsi"),
+            # Dual y-scales need more vertical pixels than single-series charts.
+            height=560 if has_rsi else None,
         )
 
     def render_trade_charts(
