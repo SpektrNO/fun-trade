@@ -10,6 +10,7 @@ from typing import Any, Iterable, Literal
 
 AssetClassName = Literal["etf", "mutual_fund", "share"]
 MomentumPositionMode = Literal["slice", "scale", "full"]
+RsiMode = Literal["momentum", "mean_reversion"]
 ASSET_CLASSES: tuple[AssetClassName, ...] = ("etf", "mutual_fund", "share")
 
 _ASSET_CLASS_ALIASES: dict[str, AssetClassName] = {
@@ -140,10 +141,16 @@ _DEFAULT_STRATEGY_ROUTER: dict[str, Any] = {
 _DEFAULT_MOMENTUM_BENCHMARK: dict[str, Any] = {
     "fast_ma_days": 50,
     "slow_ma_days": 200,
+    "rsi_period": 14,
+    "rsi_mode": "momentum",
+    "rsi_buy_min": 50.0,
+    "rsi_sell_max": 50.0,
+    "rsi_oversold": 30.0,
+    "rsi_overbought": 70.0,
     "momentum_lookback_days": 63,
     "momentum_threshold": 0.0,
-    "require_momentum_for_buy": True,
-    "exit_on_ma_crossunder": True,
+    "require_momentum_for_buy": False,
+    "exit_on_rsi_weak": True,
     "position_mode": "scale",
 }
 
@@ -166,15 +173,26 @@ class StrategyRouterConfig:
 
 @dataclass(frozen=True)
 class MomentumBenchmarkConfig:
-    """Traditional MA crossover + momentum filter (strategy benchmark vs perturbation)."""
+    """RSI benchmark (momentum or mean-reversion; MAs kept for charts / regime routing)."""
 
     fast_ma_days: int
     slow_ma_days: int
+    rsi_period: int
+    rsi_mode: RsiMode
+    rsi_buy_min: float
+    rsi_sell_max: float
+    rsi_oversold: float
+    rsi_overbought: float
     momentum_lookback_days: int
     momentum_threshold: float
     require_momentum_for_buy: bool
-    exit_on_ma_crossunder: bool
+    exit_on_rsi_weak: bool
     position_mode: MomentumPositionMode
+
+    @property
+    def exit_on_ma_crossunder(self) -> bool:
+        """Deprecated alias for exit_on_rsi_weak (older configs / call sites)."""
+        return self.exit_on_rsi_weak
 
 
 def _parse_momentum_position_mode(data: dict[str, Any]) -> MomentumPositionMode:
@@ -331,15 +349,34 @@ def _parse_strategy_router(raw: dict[str, Any] | None) -> StrategyRouterConfig:
     )
 
 
+def _parse_rsi_mode(data: dict[str, Any]) -> RsiMode:
+    mode = str(data.get("rsi_mode", "momentum")).strip().lower()
+    if mode not in ("momentum", "mean_reversion"):
+        raise ValueError(
+            f"momentum_benchmark.rsi_mode must be momentum or mean_reversion (got {mode!r})"
+        )
+    return mode  # type: ignore[return-value]
+
+
 def _parse_momentum_benchmark(raw: dict[str, Any] | None) -> MomentumBenchmarkConfig:
     data = {**_DEFAULT_MOMENTUM_BENCHMARK, **(raw or {})}
+    if "exit_on_rsi_weak" in data:
+        exit_weak = bool(data["exit_on_rsi_weak"])
+    else:
+        exit_weak = bool(data.get("exit_on_ma_crossunder", True))
     return MomentumBenchmarkConfig(
         fast_ma_days=int(data["fast_ma_days"]),
         slow_ma_days=int(data["slow_ma_days"]),
+        rsi_period=max(2, int(data["rsi_period"])),
+        rsi_mode=_parse_rsi_mode(data),
+        rsi_buy_min=float(data["rsi_buy_min"]),
+        rsi_sell_max=float(data["rsi_sell_max"]),
+        rsi_oversold=float(data["rsi_oversold"]),
+        rsi_overbought=float(data["rsi_overbought"]),
         momentum_lookback_days=int(data["momentum_lookback_days"]),
         momentum_threshold=float(data["momentum_threshold"]),
         require_momentum_for_buy=bool(data["require_momentum_for_buy"]),
-        exit_on_ma_crossunder=bool(data["exit_on_ma_crossunder"]),
+        exit_on_rsi_weak=exit_weak,
         position_mode=_parse_momentum_position_mode(data),
     )
 

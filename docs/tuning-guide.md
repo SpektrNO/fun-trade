@@ -74,7 +74,7 @@ Common with mean-reversion on global ETFs: price sits above H₀ for long stretc
 | **`H0_CALIBRATION_DAYS`** | `.env` | Default for new `config.json` blocks | Same as above for defaults |
 | **`trend_fair_value_weight`** (mutual funds) | Already 0.15 in defaults | Consider similar for `etf` block | |
 
-**What does *not* help buys (without changing strategy):** raising `w_return` alone — it can increase \|ε\| but bull markets still bias ε positive. There is no momentum “buy strength” channel today.
+**What does *not* help perturbation buys (without changing strategy):** raising `w_return` alone — it can increase \|ε\| but bull markets still bias ε positive. For trend-following overlays, use the **momentum benchmark** (`rsi_mode: momentum`) instead of expecting ε to chase rallies.
 
 ---
 
@@ -175,6 +175,52 @@ Each asset-class block shares the same parameter names; tune ETFs and mutual fun
 
 ---
 
+## Momentum benchmark (RSI)
+
+Global block in `config.json` — used by **Momentum benchmark** recommendations, momentum backtest, and the **auto** router when regime is trending. Not overridden by the Streamlit sidebar.
+
+| Key | Default | Role |
+|-----|---------|------|
+| **`rsi_mode`** | `momentum` | `momentum` = buy when RSI ≥ `rsi_buy_min`; `mean_reversion` = buy when RSI < `rsi_oversold`, sell when RSI > `rsi_overbought` |
+| **`rsi_period`** | 14 | Wilder RSI lookback (days) |
+| **`rsi_buy_min`** | 50.0 | Momentum mode: minimum RSI to enter long |
+| **`rsi_sell_max`** | 50.0 | Momentum mode: exit long when RSI drops below this (`exit_on_rsi_weak`) |
+| **`rsi_oversold`** | 30.0 | Mean-reversion mode: buy when RSI **<** this |
+| **`rsi_overbought`** | 70.0 | Mean-reversion mode: sell when RSI **>** this while holding |
+| **`fast_ma_days`** / **`slow_ma_days`** | 50 / 200 | Chart overlay + **regime router** (trending vs ranging); not RSI entry rules |
+| **`momentum_lookback_days`** | 63 | N-day return for optional buy filter |
+| **`momentum_threshold`** | 0.0 | Min return when `require_momentum_for_buy` is true |
+| **`require_momentum_for_buy`** | false | Momentum mode only: also require positive N-day return |
+| **`exit_on_rsi_weak`** | true | Momentum mode only: enable RSI-based exits |
+| **`position_mode`** | `scale` | `scale` = daily slice add/trim; `slice` = one entry per signal; `full` = all-in/out |
+
+**Mean-reversion RSI profile** (classic 30/70):
+
+```json
+"momentum_benchmark": {
+  "rsi_mode": "mean_reversion",
+  "rsi_oversold": 30.0,
+  "rsi_overbought": 70.0,
+  "position_mode": "scale"
+}
+```
+
+**Trend-following RSI profile** (default):
+
+```json
+"momentum_benchmark": {
+  "rsi_mode": "momentum",
+  "rsi_buy_min": 50.0,
+  "rsi_sell_max": 50.0,
+  "exit_on_rsi_weak": true,
+  "position_mode": "scale"
+}
+```
+
+Compare both against perturbation in **Backtest** before changing your live `config.json`.
+
+---
+
 ## Paper wallet and backtest (`.env`)
 
 Not in the UI sidebar; affects Wallet tab, paper runner, and backtest capital.
@@ -250,6 +296,19 @@ Validate on Backtest before paper.
 "trend_fair_value_weight": 0.15
 ```
 
+### E — RSI mean-reversion overlay
+
+```json
+"momentum_benchmark": {
+  "rsi_mode": "mean_reversion",
+  "rsi_oversold": 30.0,
+  "rsi_overbought": 70.0,
+  "position_mode": "scale"
+}
+```
+
+Use Recommendations → **Momentum benchmark** (not perturbation). Backtest against ε on the same symbols.
+
 ---
 
 ## Quick reference — all trading parameters
@@ -272,6 +331,19 @@ Validate on Backtest before paper.
 | `trend_gate_sells` | true | H₂ block sells in uptrend |
 | `trend_gate_z` | 0.5 | H₂ gate threshold |
 | `trend_use_benchmark` | false | H₂ trend from benchmark ETF |
+
+### `config.json` — `strategy_router` + `momentum_benchmark`
+
+| Key | Default | Role |
+|-----|---------|------|
+| `strategy_router.trend_z_min` | 0.5 | Min z_trend for trending regime |
+| `strategy_router.range_z_max` | 0.3 | Max \|z_trend\| for ranging regime |
+| `strategy_router.regime_min_days` | 10 | Hysteresis before regime switch |
+| `strategy_router.default_model` | perturbation | Model when regime is uncertain |
+| `momentum_benchmark.rsi_mode` | momentum | `momentum` or `mean_reversion` — see [§ Momentum benchmark (RSI)](#momentum-benchmark-rsi) |
+| `momentum_benchmark.rsi_oversold` | 30.0 | Mean-reversion buy threshold |
+| `momentum_benchmark.rsi_overbought` | 70.0 | Mean-reversion sell threshold |
+| `momentum_benchmark.position_mode` | scale | Slice sizing for RSI trades |
 
 ### `.env` (global)
 

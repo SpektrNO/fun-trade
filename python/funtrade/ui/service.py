@@ -43,7 +43,7 @@ from funtrade.models.perturbation import (
 from funtrade.portfolio.allocation import PortfolioAllocationResult, compute_portfolio_allocation
 from funtrade.portfolio.overlay import build_portfolio_overlay
 from funtrade.portfolio_config import load_portfolio_config
-from funtrade.ui.plotting.data import build_momentum_price_overlay
+from funtrade.ui.plotting.data import build_momentum_price_overlay, build_rsi_chart_frame
 
 CHART_WINDOW_RECENT = "recent_120"
 CHART_WINDOW_BACKTEST_TEST = "backtest_test"
@@ -233,17 +233,16 @@ def _portfolio_position_maps(portfolio) -> tuple[dict[str, float], dict[str, flo
 def resolve_recommendation_scope(
     portfolio_path: Path | str | None = None,
     *,
-    limit_to_portfolio: bool = True,
     watchlist: list[str] | None = None,
 ) -> RecommendationScope:
-    """Resolve symbol filter and assumed holdings from an optional portfolio file."""
+    """Resolve portfolio holdings metadata; recommendations use the full watchlist."""
     empty = RecommendationScope(None, frozenset(), {}, {}, {}, None, None)
     if portfolio_path is None:
         return empty
 
     portfolio = load_portfolio_config(portfolio_path)
     if portfolio is None:
-        return RecommendationScope([], frozenset(), {}, {}, {}, None, Path(portfolio_path).name)
+        return RecommendationScope(None, frozenset(), {}, {}, {}, None, Path(portfolio_path).name)
 
     portfolio_symbols = list(portfolio.symbols())
     held = frozenset(portfolio_symbols)
@@ -256,13 +255,6 @@ def resolve_recommendation_scope(
 
     portfolio_shares, portfolio_values = _portfolio_position_maps(portfolio)
     source = portfolio.source_path.name if portfolio.source_path else Path(portfolio_path).name
-    if limit_to_portfolio:
-        wl = list(watchlist or [])
-        extra = [s for s in wl if s not in held]
-        symbols = portfolio_symbols + extra
-        return RecommendationScope(
-            symbols, held, weights, portfolio_shares, portfolio_values, portfolio.name, source,
-        )
     return RecommendationScope(
         None, held, weights, portfolio_shares, portfolio_values, portfolio.name, source,
     )
@@ -274,13 +266,11 @@ def fetch_recommendations(
     assume_holding_all: bool = False,
     model: str = MODEL_PERTURBATION,
     portfolio_path: Path | str | None = None,
-    limit_to_portfolio: bool = True,
 ) -> pd.DataFrame:
     """Latest model hints for watchlist or portfolio holdings (Nordnet manual trading)."""
     base = Settings.from_env()
     scope = resolve_recommendation_scope(
         portfolio_path,
-        limit_to_portfolio=limit_to_portfolio,
         watchlist=base.watchlist,
     )
     kwargs = {
@@ -292,7 +282,6 @@ def fetch_recommendations(
         "portfolio_values": scope.portfolio_values,
         "portfolio_name": scope.portfolio_name,
         "portfolio_file": scope.portfolio_file,
-        "limit_to_portfolio": limit_to_portfolio,
     }
     if model == MODEL_MOMENTUM_BENCHMARK:
         return _fetch_momentum_recommendations(params, **kwargs)
@@ -347,9 +336,16 @@ def format_position_shares(qty: float, *, assumed: bool = False) -> str:
 def _sort_recommendations_by_position(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "position_shares" not in df.columns:
         return df
+    sort_cols: list[str] = []
+    ascending: list[bool] = []
+    if "in_portfolio" in df.columns:
+        sort_cols.append("in_portfolio")
+        ascending.append(False)
+    sort_cols.extend(["position_shares", "symbol"])
+    ascending.extend([False, True])
     return df.sort_values(
-        ["position_shares", "symbol"],
-        ascending=[False, True],
+        sort_cols,
+        ascending=ascending,
         na_position="last",
     ).reset_index(drop=True)
 
@@ -362,12 +358,10 @@ def _attach_recommendation_scope_attrs(
     portfolio_weights: dict[str, float],
     portfolio_name: str | None,
     portfolio_file: str | None,
-    limit_to_portfolio: bool,
 ) -> pd.DataFrame:
     df.attrs["assume_holding_all"] = assume_holding_all or bool(held_symbols)
     df.attrs["portfolio_name"] = portfolio_name
     df.attrs["portfolio_file"] = portfolio_file
-    df.attrs["limit_to_portfolio"] = limit_to_portfolio
     if portfolio_weights:
         df.attrs["portfolio_weights"] = portfolio_weights
     return df
@@ -384,7 +378,6 @@ def _fetch_perturbation_recommendations(
     portfolio_values: dict[str, float] | None = None,
     portfolio_name: str | None = None,
     portfolio_file: str | None = None,
-    limit_to_portfolio: bool = False,
 ) -> pd.DataFrame:
     """Apply BUY/SELL rules to latest persisted ε rows (no full-series recompute)."""
     base = Settings.from_env()
@@ -511,7 +504,6 @@ def _fetch_perturbation_recommendations(
         portfolio_weights=weights,
         portfolio_name=portfolio_name,
         portfolio_file=portfolio_file,
-        limit_to_portfolio=limit_to_portfolio,
     )
     df.attrs["model"] = MODEL_PERTURBATION
     if latest_detect is not None:
@@ -530,7 +522,6 @@ def _fetch_momentum_recommendations(
     portfolio_values: dict[str, float] | None = None,
     portfolio_name: str | None = None,
     portfolio_file: str | None = None,
-    limit_to_portfolio: bool = False,
 ) -> pd.DataFrame:
     """MA crossover + momentum benchmark recommendations."""
     base = Settings.from_env()
@@ -578,9 +569,11 @@ def _fetch_momentum_recommendations(
                     "portfolio_weight_pct": weights.get(symbol),
                     "as_of": None,
                     "price": None,
+                    "rsi": None,
                     "fast_ma": None,
                     "slow_ma": None,
                     "momentum_pct": None,
+                    "rsi_bullish": None,
                     "ma_bullish": None,
                     "position_shares": pos_qty,
                     "position_assumed": pos_assumed,
@@ -603,8 +596,7 @@ def _fetch_momentum_recommendations(
             portfolio_value=values_map.get(symbol),
         )
         sig = momentum_backtest_signal(
-            fast_ma=p.fast_ma,
-            slow_ma=p.slow_ma,
+            rsi=p.rsi,
             momentum=p.momentum,
             current_position=pos_qty,
             config=config,
@@ -617,9 +609,11 @@ def _fetch_momentum_recommendations(
                 "portfolio_weight_pct": weights.get(symbol),
                 "as_of": p.time.strftime("%Y-%m-%d") if hasattr(p.time, "strftime") else str(p.time),
                 "price": price,
-                "fast_ma": round(p.fast_ma, 2),
-                "slow_ma": round(p.slow_ma, 2),
+                "rsi": round(p.rsi, 1),
+                "fast_ma": round(p.fast_ma, 2) if not pd.isna(p.fast_ma) else None,
+                "slow_ma": round(p.slow_ma, 2) if not pd.isna(p.slow_ma) else None,
                 "momentum_pct": round(p.momentum * 100, 1) if not pd.isna(p.momentum) else None,
+                "rsi_bullish": p.rsi_bullish,
                 "ma_bullish": p.ma_bullish,
                 "position_shares": pos_qty,
                 "position_assumed": pos_assumed,
@@ -628,9 +622,8 @@ def _fetch_momentum_recommendations(
                 "note": _momentum_recommendation_note(
                     signal=sig,
                     price=price,
-                    fast_ma=p.fast_ma,
-                    slow_ma=p.slow_ma,
-                    ma_bullish=p.ma_bullish,
+                    rsi=p.rsi,
+                    rsi_bullish=p.rsi_bullish,
                     momentum=p.momentum,
                     config=config,
                     position_shares=pos_qty,
@@ -649,7 +642,6 @@ def _fetch_momentum_recommendations(
         portfolio_weights=weights,
         portfolio_name=portfolio_name,
         portfolio_file=portfolio_file,
-        limit_to_portfolio=limit_to_portfolio,
     )
     df.attrs["model"] = MODEL_MOMENTUM_BENCHMARK
     return df
@@ -672,7 +664,6 @@ def _fetch_auto_recommendations(
     portfolio_values: dict[str, float] | None = None,
     portfolio_name: str | None = None,
     portfolio_file: str | None = None,
-    limit_to_portfolio: bool = False,
 ) -> pd.DataFrame:
     """Route each symbol to perturbation or momentum by latest market regime."""
     scope_kwargs = {
@@ -684,7 +675,6 @@ def _fetch_auto_recommendations(
         "portfolio_values": portfolio_values,
         "portfolio_name": portfolio_name,
         "portfolio_file": portfolio_file,
-        "limit_to_portfolio": limit_to_portfolio,
     }
     pert_df = _fetch_perturbation_recommendations(params, **scope_kwargs)
     mom_df = _fetch_momentum_recommendations(params, **scope_kwargs)
@@ -719,9 +709,8 @@ def _fetch_auto_recommendations(
             note = _momentum_recommendation_note(
                 signal=sig,
                 price=float(m.get("price") or 0.0),
-                fast_ma=float(m.get("fast_ma") or 0.0),
-                slow_ma=float(m.get("slow_ma") or 0.0),
-                ma_bullish=bool(m.get("ma_bullish")),
+                rsi=float(m.get("rsi") if m.get("rsi") is not None else float("nan")),
+                rsi_bullish=bool(m.get("rsi_bullish")),
                 momentum=mom_val,
                 config=config,
                 position_shares=pos_qty,
@@ -736,9 +725,11 @@ def _fetch_auto_recommendations(
                     "selected_model": MODEL_MOMENTUM_BENCHMARK,
                     "signal": sig,
                     "action": _signal_action(sig),
+                    "rsi": m.get("rsi"),
                     "fast_ma": m.get("fast_ma"),
                     "slow_ma": m.get("slow_ma"),
                     "momentum_pct": m.get("momentum_pct"),
+                    "rsi_bullish": m.get("rsi_bullish"),
                     "ma_bullish": m.get("ma_bullish"),
                     "note": _regime_note(str(market_regime), MODEL_MOMENTUM_BENCHMARK) + " — " + note + alt_note,
                 }
@@ -771,7 +762,6 @@ def _fetch_auto_recommendations(
         portfolio_weights=portfolio_weights or {},
         portfolio_name=portfolio_name,
         portfolio_file=portfolio_file,
-        limit_to_portfolio=limit_to_portfolio,
     )
     df.attrs["model"] = MODEL_AUTO
     if pert_df.attrs.get("detected_at"):
@@ -783,34 +773,54 @@ def _momentum_recommendation_note(
     *,
     signal: int,
     price: float,
-    fast_ma: float,
-    slow_ma: float,
-    ma_bullish: bool,
+    rsi: float,
+    rsi_bullish: bool,
     momentum: float,
     config,
     position_shares: float,
 ) -> str:
+    rsi_txt = f"{rsi:.1f}" if not pd.isna(rsi) else "n/a"
     mom_pct = f"{momentum * 100:.1f}%" if not pd.isna(momentum) else "n/a"
+
+    if config.rsi_mode == "mean_reversion":
+        if signal > 0:
+            base = f"RSI {rsi_txt} < {config.rsi_oversold:.0f} — oversold buy (price {price:.2f})"
+            if config.position_mode == "scale" and position_shares > 0:
+                return f"{base} — add slice"
+            if config.position_mode == "scale":
+                return f"{base} — scale in"
+            return base
+        if signal < 0:
+            return f"RSI {rsi_txt} > {config.rsi_overbought:.0f} — overbought exit"
+        if not pd.isna(rsi) and rsi < config.rsi_oversold and position_shares > 0:
+            if config.position_mode == "slice":
+                return f"RSI {rsi_txt} oversold; already long (slice mode — one entry)"
+            return f"RSI {rsi_txt} oversold; hold"
+        if not pd.isna(rsi) and rsi > config.rsi_overbought and position_shares <= 0:
+            return f"RSI {rsi_txt} > {config.rsi_overbought:.0f}; flat (long-only)"
+        if not pd.isna(rsi) and rsi >= config.rsi_oversold and position_shares <= 0:
+            return f"RSI {rsi_txt} not oversold (< {config.rsi_oversold:.0f}); flat"
+        return "Hold"
+
     if signal > 0:
-        base = (
-            f"Fast MA ({fast_ma:.2f}) > slow MA ({slow_ma:.2f}); "
-            f"63d momentum {mom_pct} (price {price:.2f})"
-        )
+        base = f"RSI {rsi_txt} ≥ {config.rsi_buy_min:.0f} (price {price:.2f})"
+        if config.require_momentum_for_buy:
+            base += f"; {config.momentum_lookback_days}d return {mom_pct}"
         if config.position_mode == "scale" and position_shares > 0:
             return f"{base} — add slice"
         if config.position_mode == "scale":
             return f"{base} — scale in"
         return base
     if signal < 0:
-        return f"Fast MA ({fast_ma:.2f}) < slow MA ({slow_ma:.2f}) — exit long"
-    if ma_bullish and config.require_momentum_for_buy:
+        return f"RSI {rsi_txt} < {config.rsi_sell_max:.0f} — exit long"
+    if rsi_bullish and config.require_momentum_for_buy:
         if pd.isna(momentum) or momentum < config.momentum_threshold:
-            return f"Fast > slow, but 63d momentum {mom_pct} below threshold"
+            return f"RSI {rsi_txt} bullish, but {config.momentum_lookback_days}d return {mom_pct} below threshold"
         if config.position_mode == "slice" and position_shares > 0:
-            return "Fast > slow; already long (slice mode — one entry)"
-        return "Fast > slow; hold"
-    if not ma_bullish and position_shares <= 0:
-        return f"Fast MA ({fast_ma:.2f}) ≤ slow MA ({slow_ma:.2f}); flat"
+            return f"RSI {rsi_txt} bullish; already long (slice mode — one entry)"
+        return f"RSI {rsi_txt} bullish; hold"
+    if not rsi_bullish and position_shares <= 0:
+        return f"RSI {rsi_txt} < {config.rsi_buy_min:.0f}; flat"
     return "Hold"
 
 
@@ -993,13 +1003,13 @@ def momentum_trade_context(
         series, symbol=symbol, window=window, settings=settings,
     )
     latest = chart_series.iloc[-1]
-    if pd.isna(latest.get("fast_ma")) or pd.isna(latest.get("slow_ma")):
-        return {"error": "Moving averages not ready yet", "price_overlay": pd.DataFrame()}
+    if pd.isna(latest.get("rsi")):
+        return {"error": "RSI not ready yet", "price_overlay": pd.DataFrame()}
 
     momentum_val = float(latest["momentum"]) if not pd.isna(latest["momentum"]) else float("nan")
+    rsi_val = float(latest["rsi"])
     signal = momentum_backtest_signal(
-        fast_ma=float(latest["fast_ma"]),
-        slow_ma=float(latest["slow_ma"]),
+        rsi=rsi_val,
         momentum=momentum_val,
         current_position=current_position,
         config=config,
@@ -1007,22 +1017,41 @@ def momentum_trade_context(
     price_overlay = build_momentum_price_overlay(
         chart_series, slow_ma_days=config.slow_ma_days,
     )
+    rsi_chart = build_rsi_chart_frame(
+        chart_series,
+        rsi_mode=config.rsi_mode,
+        rsi_buy_min=config.rsi_buy_min,
+        rsi_sell_max=config.rsi_sell_max,
+        rsi_oversold=config.rsi_oversold,
+        rsi_overbought=config.rsi_overbought,
+    )
 
     return {
         "error": None,
         "fast_ma_days": config.fast_ma_days,
         "slow_ma_days": config.slow_ma_days,
+        "rsi_period": config.rsi_period,
+        "rsi_mode": config.rsi_mode,
+        "rsi_buy_min": config.rsi_buy_min,
+        "rsi_sell_max": config.rsi_sell_max,
+        "rsi_oversold": config.rsi_oversold,
+        "rsi_overbought": config.rsi_overbought,
         "momentum_lookback_days": config.momentum_lookback_days,
-        "fast_ma": float(latest["fast_ma"]),
-        "slow_ma": float(latest["slow_ma"]),
+        "fast_ma": float(latest["fast_ma"]) if not pd.isna(latest.get("fast_ma")) else None,
+        "slow_ma": float(latest["slow_ma"]) if not pd.isna(latest.get("slow_ma")) else None,
+        "rsi": rsi_val,
         "price": float(latest["price"]),
         "momentum": None if pd.isna(momentum_val) else momentum_val,
         "momentum_pct": None if pd.isna(momentum_val) else momentum_val * 100.0,
-        "ma_bullish": bool(latest["ma_bullish"]),
+        "rsi_bullish": bool(latest["rsi_bullish"]),
+        "rsi_oversold": bool(latest["rsi_oversold"]) if not pd.isna(latest.get("rsi_oversold")) else False,
+        "rsi_overbought": bool(latest["rsi_overbought"]) if not pd.isna(latest.get("rsi_overbought")) else False,
+        "ma_bullish": bool(latest["ma_bullish"]) if not pd.isna(latest.get("ma_bullish")) else False,
         "signal": signal,
         "action": _signal_action(signal),
         "as_of": chart_series.index[-1],
         "price_overlay": price_overlay,
+        "rsi_chart": rsi_chart,
     }
 
 
@@ -1034,6 +1063,23 @@ def fetch_portfolio_allocation(
     return compute_portfolio_allocation(portfolio)
 
 
+def fetch_top_hints_overlay(
+    params: UiParams,
+    *,
+    portfolio_path: Path | str | None = None,
+    max_adds: int = 3,
+    max_trims: int = 2,
+) -> pd.DataFrame:
+    """Top ε-ranked add/trim hints — always perturbation-based, independent of selected model."""
+    rec = fetch_recommendations(
+        params,
+        assume_holding_all=False,
+        model=MODEL_PERTURBATION,
+        portfolio_path=portfolio_path,
+    )
+    return build_portfolio_overlay(rec, max_adds=max_adds, max_trims=max_trims)
+
+
 def fetch_portfolio_overlay(
     params: UiParams,
     *,
@@ -1042,15 +1088,16 @@ def fetch_portfolio_overlay(
     max_trims: int = 2,
     model: str = MODEL_PERTURBATION,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """ε-ranked add/trim hints for portfolio holdings + full recommendations."""
+    """ε-ranked add/trim hints + full recommendations for the selected model."""
     rec = fetch_recommendations(
         params,
         assume_holding_all=False,
         model=model,
         portfolio_path=portfolio_path,
-        limit_to_portfolio=True,
     )
-    overlay = build_portfolio_overlay(rec, max_adds=max_adds, max_trims=max_trims)
+    overlay = fetch_top_hints_overlay(
+        params, portfolio_path=portfolio_path, max_adds=max_adds, max_trims=max_trims,
+    )
     return overlay, rec
 
 

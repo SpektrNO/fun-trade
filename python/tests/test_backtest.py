@@ -409,12 +409,23 @@ def test_run_mixed_backtest_smoke(monkeypatch):
         )
 
     def fake_mom(symbol, **kwargs):
+        from funtrade.models.momentum import compute_rsi
+
         p = price_df["price"].astype(float)
         fast = p.rolling(20, min_periods=5).mean()
         slow = p.rolling(60, min_periods=20).mean()
         mom = p / p.shift(10) - 1.0
+        rsi = compute_rsi(p, 14)
         return pd.DataFrame(
-            {"price": p, "fast_ma": fast, "slow_ma": slow, "momentum": mom, "ma_bullish": fast > slow},
+            {
+                "price": p,
+                "fast_ma": fast,
+                "slow_ma": slow,
+                "rsi": rsi,
+                "momentum": mom,
+                "rsi_bullish": rsi >= 50.0,
+                "ma_bullish": fast > slow,
+            },
             index=idx,
         )
 

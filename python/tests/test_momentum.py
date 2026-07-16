@@ -4,6 +4,7 @@ import pytest
 from pathlib import Path
 
 from funtrade.models.momentum import (
+    compute_rsi,
     momentum_backtest_signal,
     momentum_trade_qty,
     signal_from_momentum,
@@ -15,20 +16,31 @@ def _cfg(**kwargs) -> MomentumBenchmarkConfig:
     defaults = dict(
         fast_ma_days=50,
         slow_ma_days=200,
+        rsi_period=14,
+        rsi_mode="momentum",
+        rsi_buy_min=50.0,
+        rsi_sell_max=50.0,
+        rsi_oversold=30.0,
+        rsi_overbought=70.0,
         momentum_lookback_days=63,
         momentum_threshold=0.0,
-        require_momentum_for_buy=True,
-        exit_on_ma_crossunder=True,
+        require_momentum_for_buy=False,
+        exit_on_rsi_weak=True,
         position_mode="scale",
     )
     defaults.update(kwargs)
     return MomentumBenchmarkConfig(**defaults)
 
 
-def test_signal_buy_on_bullish_ma():
+def test_compute_rsi_rising_series_is_high():
+    prices = pd.Series(np.linspace(100, 130, 40))
+    rsi = compute_rsi(prices, period=14)
+    assert rsi.iloc[-1] > 70
+
+
+def test_signal_buy_on_bullish_rsi():
     sig = signal_from_momentum(
-        fast_ma=110.0,
-        slow_ma=100.0,
+        rsi=62.0,
         momentum=0.05,
         current_position=0.0,
         config=_cfg(),
@@ -38,19 +50,17 @@ def test_signal_buy_on_bullish_ma():
 
 def test_signal_hold_when_already_long():
     sig = signal_from_momentum(
-        fast_ma=110.0,
-        slow_ma=100.0,
+        rsi=62.0,
         momentum=0.05,
         current_position=50.0,
-        config=_cfg(),
+        config=_cfg(position_mode="slice"),
     )
     assert sig == 0
 
 
-def test_signal_sell_on_bearish_ma_when_long():
+def test_signal_sell_on_weak_rsi_when_long():
     sig = signal_from_momentum(
-        fast_ma=90.0,
-        slow_ma=100.0,
+        rsi=42.0,
         momentum=-0.02,
         current_position=50.0,
         config=_cfg(),
@@ -58,23 +68,39 @@ def test_signal_sell_on_bearish_ma_when_long():
     assert sig == -1
 
 
-def test_signal_blocked_by_weak_momentum():
+def test_signal_blocked_by_weak_return_filter():
     sig = signal_from_momentum(
-        fast_ma=110.0,
-        slow_ma=100.0,
+        rsi=62.0,
         momentum=-0.01,
         current_position=0.0,
-        config=_cfg(momentum_threshold=0.0),
+        config=_cfg(require_momentum_for_buy=True, momentum_threshold=0.0),
     )
     assert sig == 0
+
+
+def test_mean_reversion_buy_oversold():
+    cfg = _cfg(rsi_mode="mean_reversion")
+    assert signal_from_momentum(rsi=25.0, momentum=0.0, current_position=0.0, config=cfg) == 1
+    assert signal_from_momentum(rsi=35.0, momentum=0.0, current_position=0.0, config=cfg) == 0
+
+
+def test_mean_reversion_sell_overbought_when_long():
+    cfg = _cfg(rsi_mode="mean_reversion")
+    assert signal_from_momentum(rsi=75.0, momentum=0.0, current_position=50.0, config=cfg) == -1
+    assert signal_from_momentum(rsi=75.0, momentum=0.0, current_position=0.0, config=cfg) == 0
+
+
+def test_mean_reversion_scale_adds_while_oversold():
+    cfg = _cfg(rsi_mode="mean_reversion", position_mode="scale")
+    assert momentum_backtest_signal(rsi=25.0, momentum=0.0, current_position=50.0, config=cfg) == 1
+    assert momentum_backtest_signal(rsi=75.0, momentum=0.0, current_position=50.0, config=cfg) == -1
 
 
 def test_scale_signal_adds_each_bullish_day():
     cfg = _cfg(position_mode="scale")
     assert (
         momentum_backtest_signal(
-            fast_ma=110.0,
-            slow_ma=100.0,
+            rsi=62.0,
             momentum=0.05,
             current_position=50.0,
             config=cfg,
@@ -83,8 +109,7 @@ def test_scale_signal_adds_each_bullish_day():
     )
     assert (
         momentum_backtest_signal(
-            fast_ma=90.0,
-            slow_ma=100.0,
+            rsi=42.0,
             momentum=-0.02,
             current_position=50.0,
             config=cfg,
@@ -131,14 +156,14 @@ def test_momentum_recommendation_note_scale_add_slice():
     note = _momentum_recommendation_note(
         signal=1,
         price=100.0,
-        fast_ma=110.0,
-        slow_ma=100.0,
-        ma_bullish=True,
+        rsi=62.0,
+        rsi_bullish=True,
         momentum=0.05,
         config=_cfg(position_mode="scale"),
         position_shares=50.0,
     )
     assert "add slice" in note
+    assert "RSI" in note
 
 
 def test_run_momentum_backtest_trades(monkeypatch):
@@ -154,31 +179,21 @@ def test_run_momentum_backtest_trades(monkeypatch):
         return price_df
 
     def fake_series(symbol, **kwargs):
-        p = price_df["price"].astype(float)
-        fast = p.rolling(20, min_periods=5).mean()
-        slow = p.rolling(60, min_periods=20).mean()
-        mom = p / p.shift(10) - 1.0
-        return pd.DataFrame(
-            {
-                "price": p,
-                "fast_ma": fast,
-                "slow_ma": slow,
-                "momentum": mom,
-                "ma_bullish": fast > slow,
-            },
-            index=idx,
-        )
+        from funtrade.models.momentum import momentum_frame_from_prices
+
+        return momentum_frame_from_prices(price_df["price"].astype(float), _cfg(
+            fast_ma_days=20,
+            slow_ma_days=60,
+            momentum_lookback_days=10,
+        ))
 
     monkeypatch.setattr(eng, "load_price_bars", fake_load)
     monkeypatch.setattr(eng, "compute_momentum_series", fake_series)
 
-    cfg = MomentumBenchmarkConfig(
+    cfg = _cfg(
         fast_ma_days=20,
         slow_ma_days=60,
         momentum_lookback_days=10,
-        momentum_threshold=0.0,
-        require_momentum_for_buy=True,
-        exit_on_ma_crossunder=True,
         position_mode="scale",
     )
 

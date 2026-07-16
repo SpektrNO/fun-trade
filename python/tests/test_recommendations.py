@@ -78,9 +78,9 @@ def test_format_position_shares_avoids_zero_rounding():
 def test_sort_recommendations_by_position():
     df = pd.DataFrame(
         [
-            {"symbol": "A", "position_shares": 0.0},
-            {"symbol": "B", "position_shares": 100.0},
-            {"symbol": "C", "position_shares": 50.0},
+            {"symbol": "A", "position_shares": 0.0, "in_portfolio": False},
+            {"symbol": "B", "position_shares": 100.0, "in_portfolio": True},
+            {"symbol": "C", "position_shares": 50.0, "in_portfolio": True},
         ]
     )
     sorted_df = _sort_recommendations_by_position(df)
@@ -94,7 +94,7 @@ def test_params_draft_pending_detects_sidebar_changes():
     assert params_draft_pending(base, changed)
 
 
-def test_resolve_recommendation_scope_limits_to_portfolio(tmp_path, monkeypatch):
+def test_resolve_recommendation_scope_with_portfolio(tmp_path, monkeypatch):
     import json
 
     from funtrade.ui.service import resolve_recommendation_scope
@@ -115,18 +115,12 @@ def test_resolve_recommendation_scope_limits_to_portfolio(tmp_path, monkeypatch)
         encoding="utf-8",
     )
     scoped = resolve_recommendation_scope(
-        path, limit_to_portfolio=True, watchlist=["VWCE.DE", "AGGH.DE", "EUNL.DE"],
+        path, watchlist=["VWCE.DE", "AGGH.DE", "EUNL.DE"],
     )
-    assert scoped.symbols == ["VWCE.DE", "AGGH.DE", "EUNL.DE"]
+    assert scoped.symbols is None
     assert scoped.held_symbols == frozenset({"VWCE.DE", "AGGH.DE"})
     assert scoped.portfolio_weights == {"VWCE.DE": 60.0, "AGGH.DE": 40.0}
     assert scoped.portfolio_name == "Private"
-
-    full = resolve_recommendation_scope(
-        path, limit_to_portfolio=False, watchlist=["VWCE.DE", "AGGH.DE", "EUNL.DE"],
-    )
-    assert full.symbols is None
-    assert full.held_symbols == frozenset({"VWCE.DE", "AGGH.DE"})
 
 
 def test_auto_recommendations_use_momentum_when_trending(monkeypatch):
@@ -163,7 +157,9 @@ def test_auto_recommendations_use_momentum_when_trending(monkeypatch):
                 "price": 100.0,
                 "fast_ma": 110.0,
                 "slow_ma": 100.0,
+                "rsi": 62.0,
                 "momentum_pct": 5.0,
+                "rsi_bullish": True,
                 "ma_bullish": True,
                 "position_shares": 0.0,
                 "position_assumed": False,

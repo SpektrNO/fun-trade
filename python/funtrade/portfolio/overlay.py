@@ -64,7 +64,9 @@ def build_portfolio_overlay(
 
     work = recommendations.copy()
     if "in_portfolio" in work.columns:
-        work = work[work["in_portfolio"]].copy()
+        portfolio_rows = work[work["in_portfolio"]].copy()
+        if not portfolio_rows.empty:
+            work = portfolio_rows
     if work.empty:
         return work
     work["_add_rank"] = pd.NA

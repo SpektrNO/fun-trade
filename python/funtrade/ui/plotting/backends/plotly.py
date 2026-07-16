@@ -15,7 +15,10 @@ from funtrade.ui.plotting.data import (
     normalize_chart_times,
     prepare_trade_chart_frames,
     price_chart_series,
+    price_rsi_caption,
     regime_invalid_spans,
+    rsi_chart_series,
+    rsi_threshold_levels,
 )
 
 _LAYOUT = dict(
@@ -126,6 +129,86 @@ def _epsilon_figure(df: pd.DataFrame, *, epsilon_threshold: float) -> go.Figure:
     return fig
 
 
+def _price_rsi_figure(
+    price_df: pd.DataFrame,
+    *,
+    price_cols: list[str],
+    rsi_df: pd.DataFrame | None,
+    rsi_params: dict | None,
+    currency: str,
+) -> go.Figure:
+    has_rsi = rsi_df is not None and not rsi_df.empty and rsi_params is not None
+    if not has_rsi:
+        return _time_series_figure(price_df, x="time", y=price_cols, title=None)
+
+    period = int(rsi_params.get("rsi_period", 14))
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.62, 0.38],
+        subplot_titles=(f"Price ({currency})", f"RSI ({period})"),
+    )
+
+    plot_price = price_df.copy()
+    plot_price["time"] = pd.to_datetime(plot_price["time"])
+    line_styles: dict[str, dict] = {
+        "price": dict(line=dict(color="#2c3e50", width=2)),
+        "Fair price (H₀)": dict(line=dict(color="#e67e22", dash="dash", width=1.5)),
+        "Fair + perturbation (ε)": dict(line=dict(color="#3498db", dash="dot", width=1.5)),
+        "Fast MA": dict(line=dict(color="#27ae60", width=1.5)),
+        "Slow MA": dict(line=dict(color="#c0392b", width=1.5)),
+        "Upper band (+2σ)": dict(line=dict(color="#95a5a6", dash="dash", width=1)),
+        "Lower band (−2σ)": dict(line=dict(color="#95a5a6", dash="dash", width=1)),
+    }
+    for col in price_cols:
+        if col not in plot_price.columns:
+            continue
+        style = line_styles.get(col, {})
+        fig.add_trace(
+            go.Scatter(
+                x=plot_price["time"],
+                y=plot_price[col],
+                mode="lines",
+                name=col,
+                **style,
+            ),
+            row=1,
+            col=1,
+        )
+
+    plot_rsi = rsi_df.copy()
+    plot_rsi["time"] = pd.to_datetime(plot_rsi["time"])
+    rsi_cols = rsi_chart_series(plot_rsi)
+    rsi_styles: dict[str, dict] = {
+        "RSI": dict(line=dict(color="#8e44ad", width=2)),
+    }
+    buy_lvl, sell_lvl, _, _ = rsi_threshold_levels(rsi_params)
+    for col in rsi_cols:
+        style = rsi_styles.get(col, dict(line=dict(color="#95a5a6", dash="dash", width=1)))
+        fig.add_trace(
+            go.Scatter(
+                x=plot_rsi["time"],
+                y=plot_rsi[col],
+                mode="lines",
+                name=col,
+                **style,
+            ),
+            row=2,
+            col=1,
+        )
+
+    if rsi_params.get("rsi_mode") == "mean_reversion":
+        fig.add_hrect(y0=0, y1=buy_lvl, fillcolor="rgba(39, 174, 96, 0.08)", line_width=0, row=2, col=1)
+        fig.add_hrect(y0=sell_lvl, y1=100, fillcolor="rgba(231, 76, 60, 0.08)", line_width=0, row=2, col=1)
+
+    fig.update_yaxes(title_text=currency, row=1, col=1)
+    fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
+    fig.update_xaxes(title_text="", row=1, col=1)
+    return fig
+
+
 class PlotlyRenderer(ChartRenderer):
     def render_time_series(
         self,
@@ -170,6 +253,8 @@ class PlotlyRenderer(ChartRenderer):
         trend_enable: bool = False,
         trend_gate_z: float | None = None,
         momentum_overlay: pd.DataFrame | None = None,
+        rsi_chart: pd.DataFrame | None = None,
+        rsi_params: dict | None = None,
     ) -> None:
         charts = prepare_trade_chart_frames(
             series,
@@ -186,15 +271,23 @@ class PlotlyRenderer(ChartRenderer):
         )
         self.render_epsilon_chart(charts["epsilon"], epsilon_threshold=epsilon_threshold, chart_key="trade-epsilon")
 
-        st.subheader(f"Price ({currency})")
+        st.subheader(f"Price & RSI ({currency})")
         price_cols = price_chart_series(charts["price"])
-        if len(price_cols) > 1:
+        if rsi_chart is not None and not rsi_chart.empty and rsi_params is not None:
+            st.caption(price_rsi_caption(rsi_params=rsi_params, currency=currency))
+        elif len(price_cols) > 1:
             st.caption(
                 "Solid: price and moving averages. Dashed: Bollinger ±2σ bands on slow MA."
             )
         _show(
-            _time_series_figure(charts["price"], x="time", y=price_cols, title=None),
-            key=_chart_key("trade", "price"),
+            _price_rsi_figure(
+                charts["price"],
+                price_cols=price_cols,
+                rsi_df=rsi_chart,
+                rsi_params=rsi_params,
+                currency=currency,
+            ),
+            key=_chart_key("trade", "price-rsi"),
         )
 
         if "z_trend" in charts:

@@ -42,8 +42,10 @@ class ChartRenderer(ABC):
         trend_enable: bool = False,
         trend_gate_z: float | None = None,
         momentum_overlay: pd.DataFrame | None = None,
+        rsi_chart: pd.DataFrame | None = None,
+        rsi_params: dict | None = None,
     ) -> None:
-        """Trade tab: ε bands, price (+ optional MA/Bollinger overlay), and z_trend."""
+        """Trade tab: ε bands, price (+ optional MA/Bollinger + RSI panel), and z_trend."""
 
     @abstractmethod
     def render_allocation_bars(

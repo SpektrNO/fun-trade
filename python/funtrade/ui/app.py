@@ -28,7 +28,7 @@ from funtrade.ui.service import (
     default_ui_params,
     fetch_recommendations,
     fetch_portfolio_allocation,
-    fetch_portfolio_overlay,
+    fetch_top_hints_overlay,
     format_position_shares,
     momentum_trade_context,
     MODEL_AUTO,
@@ -843,21 +843,30 @@ with tab_trade:
         chart_series = pd.DataFrame()
 
     st.markdown("**Momentum benchmark**")
+    rsi_chart = None
+    rsi_params = None
     if mom_ctx.get("error"):
         st.caption(mom_ctx["error"])
         momentum_overlay = None
     else:
-        st.caption(
-            f"Fast **{mom_ctx['fast_ma_days']}d** / slow **{mom_ctx['slow_ma_days']}d** MA · "
-            f"**{mom_ctx['momentum_lookback_days']}d** momentum"
-        )
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Fast MA", f"{mom_ctx['fast_ma']:.2f}")
-        m2.metric("Slow MA", f"{mom_ctx['slow_ma']:.2f}")
-        m3.metric("Momentum", f"{mom_ctx['momentum_pct']:.1f}%" if mom_ctx["momentum_pct"] is not None else "n/a")
-        m4.metric("Fast > slow", "Yes" if mom_ctx["ma_bullish"] else "No")
-        m5.metric("Signal", mom_ctx["action"])
+        m1, m2, m3 = st.columns(3)
+        m1.metric("RSI", f"{mom_ctx['rsi']:.1f}")
+        if mom_ctx.get("rsi_mode") == "mean_reversion":
+            m2.metric("Oversold", "Yes" if mom_ctx.get("rsi_oversold") else "No")
+        else:
+            m2.metric("RSI bullish", "Yes" if mom_ctx["rsi_bullish"] else "No")
+        m3.metric("Signal", mom_ctx["action"])
         momentum_overlay = mom_ctx.get("price_overlay")
+        rsi_chart = mom_ctx.get("rsi_chart")
+        rsi_params = {
+            "rsi_mode": mom_ctx["rsi_mode"],
+            "rsi_period": mom_ctx["rsi_period"],
+            "rsi_buy_min": mom_ctx["rsi_buy_min"],
+            "rsi_sell_max": mom_ctx["rsi_sell_max"],
+            "rsi_oversold": mom_ctx["rsi_oversold"],
+            "rsi_overbought": mom_ctx["rsi_overbought"],
+            "action": mom_ctx["action"],
+        }
 
     if not chart_series.empty:
         chart_renderer.render_trade_charts(
@@ -867,6 +876,8 @@ with tab_trade:
             trend_enable=settings.trend_enable,
             trend_gate_z=applied.trend_gate_z if applied.trend_gate_sells else None,
             momentum_overlay=momentum_overlay,
+            rsi_chart=rsi_chart,
+            rsi_params=rsi_params,
         )
 
     if st.button("Run model paper cycle"):
@@ -901,27 +912,21 @@ with tab_trade:
 with tab_recommendations:
     st.subheader("Recommendations")
     st.caption(
-        "Tactical hints for **your portfolio holdings** — not fund-to-fund target weights. "
-        "When limited to a portfolio file, shows the **top ε-ranked** add/trim ideas among "
-        "what you already hold; core strategy stays buy-and-hold."
+        "Tactical hints for manual trading. **Top hints** ranks the deepest ε dips and richest "
+        "names to trim; the table below uses your selected model. When a portfolio file is selected, "
+        "holdings sort first by position size."
     )
     portfolio_files = discover_portfolio_files()
     rec_portfolio_path = None
-    limit_to_portfolio = True
+    selected_file = None
     if portfolio_files:
         file_names = [p.name for p in portfolio_files]
         selected_file = _portfolio_file_selectbox(file_names, widget_key="rec_portfolio_file")
         rec_portfolio_path = next(p for p in portfolio_files if p.name == selected_file)
-        limit_to_portfolio = st.toggle(
-            "Limit to portfolio holdings",
-            value=bool(st.session_state.get("rec_limit_to_portfolio", True)),
-            help="Only your strategic holdings — skips the full ETF watchlist.",
-            key="rec_limit_to_portfolio",
-        )
 
     _model_labels = {
         MODEL_PERTURBATION: "Perturbation (ε mean reversion)",
-        MODEL_MOMENTUM_BENCHMARK: "Momentum benchmark (MA crossover)",
+        MODEL_MOMENTUM_BENCHMARK: "Momentum benchmark (RSI)",
         MODEL_AUTO: "Auto (regime router)",
     }
     rec_model = st.radio(
@@ -936,24 +941,29 @@ with tab_recommendations:
         st.session_state.rec_model_prev = rec_model
         st.session_state.pop("recommendations_df", None)
 
-    if rec_model == MODEL_PERTURBATION and limit_to_portfolio and portfolio_files:
-        st.caption(
-            "Highlights up to **3** deepest dips and **2** richest names vs fair value among your holdings. "
-            "The full table lists portfolio holdings by position size, then watchlist symbols you don't hold."
-        )
-    elif rec_model == MODEL_PERTURBATION:
-        st.caption("Reads latest **ε** from detect. Limit to portfolio holdings for a shorter ranked view.")
-    elif rec_model == MODEL_AUTO:
+    if rec_model == MODEL_AUTO:
         st.caption(
             "Per-symbol **regime router** (`strategy_router` in config.json): "
             "**trending** → momentum; **ranging** → perturbation."
         )
+    elif rec_model == MODEL_MOMENTUM_BENCHMARK:
+        base = Settings.from_env()
+        mom_cfg = base.universe.momentum_benchmark if base.universe else None
+        if mom_cfg and mom_cfg.rsi_mode == "mean_reversion":
+            st.caption(
+                f"RSI mean-reversion — **buy** when RSI < {mom_cfg.rsi_oversold:.0f}; "
+                f"**sell** when RSI > {mom_cfg.rsi_overbought:.0f}."
+            )
+        else:
+            st.caption(
+                "RSI momentum — **buy** when RSI ≥ buy threshold (default 50); "
+                "**sell** when RSI drops below sell threshold."
+            )
     else:
-        st.caption(
-            "MA crossover benchmark — **buy** when fast MA > slow MA with positive 63-day momentum."
-        )
+        st.caption("Reads latest **ε** from detect.")
+
     assume_holding_all = False
-    if not limit_to_portfolio or not portfolio_files:
+    if not portfolio_files:
         assume_holding_all = st.toggle(
             "Assume I hold every symbol",
             value=bool(st.session_state.get("rec_assume_holding_all", False)),
@@ -969,103 +979,82 @@ with tab_recommendations:
         st.session_state.rec_assume_holding_all = assume_holding_all
 
     prev_portfolio = st.session_state.get("rec_portfolio_prev")
-    prev_limit = st.session_state.get("rec_limit_to_portfolio_prev", True)
     current_portfolio = selected_file if portfolio_files else None
     scope_changed = (
         rec_model != prev_model
         or assume_holding_all != prev_assume
         or current_portfolio != prev_portfolio
-        or limit_to_portfolio != prev_limit
     )
     if portfolio_files:
         st.session_state.rec_portfolio_prev = selected_file
-        st.session_state.rec_limit_to_portfolio_prev = limit_to_portfolio
 
     if st.button("Refresh recommendations", type="primary") or scope_changed:
         try:
-            if limit_to_portfolio and rec_model == MODEL_PERTURBATION and rec_portfolio_path is not None:
-                overlay, rec = fetch_portfolio_overlay(
-                    applied,
-                    portfolio_path=rec_portfolio_path,
-                    model=rec_model,
-                )
-                st.session_state.recommendations_df = rec
-                st.session_state.portfolio_overlay_df = overlay
-            else:
-                st.session_state.recommendations_df = fetch_recommendations(
-                    applied,
-                    assume_holding_all=assume_holding_all,
-                    model=rec_model,
-                    portfolio_path=rec_portfolio_path,
-                    limit_to_portfolio=limit_to_portfolio,
-                )
-                st.session_state.pop("portfolio_overlay_df", None)
+            st.session_state.recommendations_df = fetch_recommendations(
+                applied,
+                assume_holding_all=assume_holding_all,
+                model=rec_model,
+                portfolio_path=rec_portfolio_path,
+            )
+            st.session_state.portfolio_overlay_df = fetch_top_hints_overlay(
+                applied,
+                portfolio_path=rec_portfolio_path,
+            )
         except Exception as e:
             st.error(str(e))
 
     if "recommendations_df" in st.session_state:
         rec = st.session_state.recommendations_df
         if rec.empty:
-            if rec.attrs.get("portfolio_file") and rec.attrs.get("limit_to_portfolio"):
-                st.warning(
-                    f"No holdings in **`{rec.attrs['portfolio_file']}`** "
-                    "or portfolio could not be loaded."
-                )
-            else:
-                st.warning("Watchlist is empty. Add symbols under `etf`, `mutual_fund`, or `share` in config.json.")
+            st.warning("Watchlist is empty. Add symbols under `etf`, `mutual_fund`, or `share` in config.json.")
         else:
             portfolio_name = rec.attrs.get("portfolio_name")
             portfolio_file = rec.attrs.get("portfolio_file")
             overlay_df = st.session_state.get("portfolio_overlay_df")
 
-            if overlay_df is not None:
-                if not overlay_df.empty:
-                    title = portfolio_name or portfolio_file or "portfolio"
-                    st.markdown(f"**Top hints** — {title}")
-                    n_add = int((overlay_df["overlay_action"] == "Add (dip)").sum())
-                    n_trim = int((overlay_df["overlay_action"] == "Trim (rich)").sum())
-                    o1, o2 = st.columns(2)
-                    o1.metric("Add (dip)", n_add)
-                    o2.metric("Trim (rich)", n_trim)
-                    overlay_display = overlay_df.rename(
-                        columns={
-                            "symbol": "Symbol",
-                            "overlay_action": "Hint",
-                            "overlay_detail": "Rationale",
-                            "portfolio_weight_pct": "Weight %",
-                            "epsilon": "ε",
-                            "action": "Raw signal",
-                        }
-                    )
-                    overlay_cols = [
-                        c for c in ["Symbol", "Hint", "Rationale", "Weight %", "ε", "Raw signal"]
-                        if c in overlay_display.columns
-                    ]
-                    st.dataframe(
-                        overlay_display[overlay_cols].style.apply(_recommendation_row_styles, axis=1),
-                        width="stretch",
-                        hide_index=True,
-                        column_config={
-                            "Weight %": st.column_config.NumberColumn(format="%.2f"),
-                            "ε": st.column_config.NumberColumn(format="%.3f"),
-                        },
-                    )
-                else:
-                    st.success(
-                        "Nothing stands out this week — all holdings inside ε bands or not in the top ranks. "
-                        "Stay on your normal buy-and-hold plan."
-                    )
+            overlay_title = portfolio_name or portfolio_file or "watchlist"
+            st.markdown(f"**Top hints** — {overlay_title} (ε-ranked)")
+            if overlay_df is not None and not overlay_df.empty:
+                n_add = int((overlay_df["overlay_action"] == "Add (dip)").sum())
+                n_trim = int((overlay_df["overlay_action"] == "Trim (rich)").sum())
+                o1, o2 = st.columns(2)
+                o1.metric("Add (dip)", n_add)
+                o2.metric("Trim (rich)", n_trim)
+                overlay_display = overlay_df.rename(
+                    columns={
+                        "symbol": "Symbol",
+                        "overlay_action": "Hint",
+                        "overlay_detail": "Rationale",
+                        "portfolio_weight_pct": "Weight %",
+                        "epsilon": "ε",
+                        "action": "Raw signal",
+                    }
+                )
+                overlay_cols = [
+                    c for c in ["Symbol", "Hint", "Rationale", "Weight %", "ε", "Raw signal"]
+                    if c in overlay_display.columns
+                ]
+                st.dataframe(
+                    overlay_display[overlay_cols].style.apply(_recommendation_row_styles, axis=1),
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Weight %": st.column_config.NumberColumn(format="%.2f"),
+                        "ε": st.column_config.NumberColumn(format="%.3f"),
+                    },
+                )
+            else:
+                st.success(
+                    "Nothing stands out this week — no top-ranked dips or trims vs fair value. "
+                    "Stay on your normal buy-and-hold plan."
+                )
 
-            with st.expander("All raw signals", expanded=overlay_df is None or overlay_df.empty):
-                if portfolio_file and rec.attrs.get("limit_to_portfolio"):
+            with st.expander("All signals", expanded=True):
+                if portfolio_file:
                     title = portfolio_name or portfolio_file
                     st.caption(
-                        f"**{title}** holdings first (sorted by position size), "
-                        "then other watchlist symbols with no position."
-                    )
-                elif portfolio_file and portfolio_name:
-                    st.caption(
-                        f"Full watchlist — portfolio holdings from **{portfolio_name}** treated as long."
+                        f"Full watchlist — **{title}** holdings first (sorted by position size), "
+                        f"then other symbols. Model: **{_model_labels.get(rec_model, rec_model)}**."
                     )
                 if rec.attrs.get("assume_holding_all"):
                     st.info(
@@ -1107,9 +1096,11 @@ with tab_recommendations:
                         "z_trend": "z_trend",
                         "market_regime": "Regime",
                         "selected_model": "Strategy",
+                        "rsi": "RSI",
                         "fast_ma": "Fast MA",
                         "slow_ma": "Slow MA",
                         "momentum_pct": "Momentum %",
+                        "rsi_bullish": "RSI bullish",
                         "ma_bullish": "Fast > slow",
                         "position_label": "Position",
                         "action": "Action",
@@ -1122,14 +1113,14 @@ with tab_recommendations:
                 if rec_model == MODEL_MOMENTUM_BENCHMARK:
                     show_cols = [
                         c for c in show_cols
-                        if c not in ("ε", "ε thresh", "Regime OK", "z_trend", "Regime", "Strategy")
+                        if c not in ("ε", "ε thresh", "Regime OK", "z_trend", "Regime", "Strategy", "Momentum %", "Fast > slow")
                     ]
                 elif rec_model == MODEL_AUTO:
                     pass
                 else:
                     show_cols = [
                         c for c in show_cols
-                        if c not in ("Fast MA", "Slow MA", "Momentum %", "Fast > slow", "Regime", "Strategy")
+                        if c not in ("RSI", "Fast MA", "Slow MA", "Momentum %", "RSI bullish", "Fast > slow", "Regime", "Strategy")
                     ]
                 table = display[show_cols]
                 st.dataframe(
@@ -1143,9 +1134,11 @@ with tab_recommendations:
                         "ε": st.column_config.NumberColumn(format="%.3f"),
                         "ε thresh": st.column_config.NumberColumn(format="%.2f"),
                         "Regime OK": st.column_config.CheckboxColumn(),
+                        "RSI": st.column_config.NumberColumn(format="%.1f"),
                         "Fast MA": st.column_config.NumberColumn(format="%.2f"),
                         "Slow MA": st.column_config.NumberColumn(format="%.2f"),
                         "Momentum %": st.column_config.NumberColumn(format="%.1f"),
+                        "RSI bullish": st.column_config.CheckboxColumn(),
                         "Fast > slow": st.column_config.CheckboxColumn(),
                     },
                 )

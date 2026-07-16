@@ -98,7 +98,7 @@ In the **Recommendations** tab and **Backtest** UI you can compare three approac
 | Model | Idea | Buy when | Sell / trim when |
 |-------|------|----------|------------------|
 | **Perturbation** | Mean-reversion to H₀ fair band | ε < −threshold, regime OK | ε > +threshold while holding |
-| **Momentum benchmark** | Trend-following MA + momentum | Fast MA > slow MA (+ momentum filter) | MA cross-under or exit rules |
+| **Momentum benchmark** | RSI rules (`momentum_benchmark` in `config.json`) | See [§7](#momentum-signals) — momentum or mean-reversion mode | RSI exit rules while holding |
 | **Auto (regime router)** | Pick perturbation or momentum per symbol/day | Whichever model the regime selects | Same, routed dynamically |
 
 **Backtest** shows all three equity curves plus a **regime timeline** (trending / ranging / uncertain) for the mixed strategy.
@@ -109,7 +109,7 @@ In the **Recommendations** tab and **Backtest** UI you can compare three approac
 
 ### Momentum in one sentence
 
-> Ride the trend when fast moving average is above slow, with optional momentum confirmation; scale in gradually (`position_mode: scale`).
+> **RSI benchmark** — either ride strength (`rsi_mode: momentum`, buy when RSI ≥ 50) or fade extremes (`rsi_mode: mean_reversion`, buy when RSI < 30, sell when RSI > 70); scale in gradually (`position_mode: scale`). Fast/slow MAs are used for **regime routing** and charts, not for RSI signal generation.
 
 ### Auto in one sentence
 
@@ -241,7 +241,7 @@ The **regime router** (`strategy_router` in `config.json`) labels each symbol **
 | Regime | Condition (simplified) | Selected model |
 |--------|------------------------|----------------|
 | **Ranging** | \|z_trend\| ≤ 0.3 **or** many MA crossovers in 90 days | Perturbation |
-| **Trending** | Fast MA > slow MA, momentum OK, z_trend ≥ 0.5 | Momentum |
+| **Trending** | Fast MA > slow MA, momentum OK, z_trend ≥ 0.5 | Momentum benchmark (RSI) |
 | **Uncertain** | Neither | `default_model` (perturbation) |
 
 **Hysteresis:** once a label is active, a new label must hold for **`regime_min_days`** (default 10) consecutive days before switching. This avoids flip-flopping at boundaries.
@@ -251,7 +251,7 @@ The **regime router** (`strategy_router` in `config.json`) labels each symbol **
 ```mermaid
 flowchart LR
   prices[Daily prices] --> pert[Perturbation ε]
-  prices --> mom[MA + momentum]
+  prices --> mom[RSI + MAs]
   pert --> zt[z_trend]
   mom --> ma[Fast / slow MA]
   zt --> classifier[Regime classifier]
@@ -274,8 +274,25 @@ Config defaults (`config.json.example`):
   "ma_cross_max_for_range": 2,
   "regime_min_days": 10,
   "default_model": "perturbation"
+},
+"momentum_benchmark": {
+  "fast_ma_days": 50,
+  "slow_ma_days": 200,
+  "rsi_period": 14,
+  "rsi_mode": "momentum",
+  "rsi_buy_min": 50.0,
+  "rsi_sell_max": 50.0,
+  "rsi_oversold": 30.0,
+  "rsi_overbought": 70.0,
+  "momentum_lookback_days": 63,
+  "momentum_threshold": 0.0,
+  "require_momentum_for_buy": false,
+  "exit_on_rsi_weak": true,
+  "position_mode": "scale"
 }
 ```
+
+Set `"rsi_mode": "mean_reversion"` to use classic oversold/overbought RSI (buy < 30, sell > 70). See [tuning-guide.md](tuning-guide.md#momentum-benchmark-rsi) for every field.
 
 ---
 
@@ -293,18 +310,36 @@ Config defaults (`config.json.example`):
 
 ### Momentum signals
 
-| Signal | Condition |
-|--------|-----------|
-| BUY | Fast MA > slow MA (+ momentum above threshold if required) |
-| SELL | Fast MA crosses under slow (if `exit_on_ma_crossunder`) |
-| HOLD | No change in regime |
+The momentum benchmark uses **Wilder RSI** (default period 14). Mode is set by `momentum_benchmark.rsi_mode` in `config.json`.
+
+#### `rsi_mode: momentum` (default)
+
+Trend-following RSI — buy strength, exit on weakness.
+
+| Signal | Condition (long-only) |
+|--------|------------------------|
+| BUY | RSI ≥ `rsi_buy_min` (default 50); optional `require_momentum_for_buy` + `momentum_threshold` on N-day return |
+| SELL | RSI < `rsi_sell_max` (default 50) while holding, when `exit_on_rsi_weak` is true |
+| HOLD | Otherwise |
+
+#### `rsi_mode: mean_reversion`
+
+Classic RSI extremes — buy oversold, sell overbought.
+
+| Signal | Condition (long-only) |
+|--------|------------------------|
+| BUY | RSI **<** `rsi_oversold` (default 30) |
+| SELL | RSI **>** `rsi_overbought` (default 70) while holding |
+| HOLD | Otherwise (e.g. flat when overbought — no shorting) |
+
+#### Position modes
 
 **Position modes** (`momentum_benchmark.position_mode`):
 
 | Mode | Behaviour |
 |------|-----------|
-| `scale` | Add/remove one slice per day while trend persists — gradual build |
-| `slice` | One slice per signal edge |
+| `scale` | Add/remove one slice per day while the entry condition persists — gradual build |
+| `slice` | One slice on first entry signal; full exit on sell signal |
 | `full` | All-in / all-out (aggressive; usually too harsh for real portfolios) |
 
 Default: **`scale`** — realistic for ETF accumulation.
@@ -387,10 +422,10 @@ Weekly calibrate is enough for most users; daily detect after ingest is the impo
 
 ## 10. When each model tends to work
 
-| Market character | Perturbation | Momentum | Auto (mixed) |
-|------------------|-------------|----------|--------------|
-| Range-bound, choppy | Strong | Whipsaws | Routes to perturbation |
-| Steady bull trend | Few buys, trim gating helps | Strong | Routes to momentum |
+| Market character | Perturbation | Momentum benchmark | Auto (mixed) |
+|------------------|-------------|-------------------|--------------|
+| Range-bound, choppy | Strong | Whipsaws (momentum mode) or better fit (mean-reversion RSI) | Routes to perturbation |
+| Steady bull trend | Few buys, trim gating helps | Strong in momentum mode | Routes to momentum |
 | Crash then bounce | Buys dips if regime valid | Late entry | Depends on regime flip lag |
 | Mutual fund NAV, slow | Good with long H₀ window | Less data for MA | Often perturbation |
 | Single volatile share | Tune regime gates carefully | Higher turnover | Test both |
@@ -398,7 +433,8 @@ Weekly calibrate is enough for most users; daily detect after ingest is the impo
 **Empirical pattern (from research on this codebase):**
 
 - **Perturbation** beats momentum when price **mean-reverts** around a stable fair band (e.g. DNB funds in chop, European equity in sideways years).  
-- **Momentum** beats perturbation in **persistent trends** (e.g. multi-year global equity rally).  
+- **Momentum benchmark** (RSI momentum mode) beats perturbation in **persistent trends** (e.g. multi-year global equity rally).  
+- **Mean-reversion RSI** (`rsi_mode: mean_reversion`) can suit range-bound symbols when you want a price-only overlay without H₀ — compare in Backtest.  
 - **Mixed (auto)** often picks the better candidate **most of the time** — but always backtest your symbols; hysteresis adds lag at regime changes.
 
 ---
@@ -437,6 +473,12 @@ Weekly calibrate is enough for most users; daily detect after ingest is the impo
 - `.env`: `H0_ENABLE_CLIMATE=true`, `H0_CLIMATE_MODE=spread`, `H0_WEIGHT_CLIMATE=0.06`  
 - `make ingest-factors && make calibrate-all`
 
+**E — RSI mean-reversion overlay**
+
+- `momentum_benchmark.rsi_mode: "mean_reversion"`, `rsi_oversold: 30`, `rsi_overbought: 70`  
+- Recommendations model: **Momentum benchmark** (not perturbation)  
+- Good for comparing a classic RSI dip-buy overlay vs ε on the same watchlist
+
 Full parameter reference: [tuning-guide.md](tuning-guide.md).
 
 ---
@@ -453,6 +495,7 @@ Full parameter reference: [tuning-guide.md](tuning-guide.md).
 | Changing sidebar only, expecting Grafana to match | Sidebar overrides session; DB uses `config.json` | Edit `config.json` + `make detect` for persisted history |
 | Skipping backtest | More signals ≠ better returns | Compare vs buy-and-hold in UI |
 | `position_mode: full` on momentum | Unrealistic all-in/all-out | Use `scale` (default) |
+| Expecting MA cross signals on momentum benchmark | Signals are **RSI-based**; MAs only feed the regime router | Set `rsi_mode` and thresholds in `momentum_benchmark` |
 
 ---
 
@@ -485,4 +528,4 @@ In the UI:
 
 ---
 
-*Last updated for FunTrade v1: perturbation + momentum + regime router (mixed auto), positive oil weight guidance, climate spread mode.*
+*Last updated: perturbation + RSI momentum benchmark (momentum / mean-reversion modes) + regime router (mixed auto), positive oil weight guidance, climate spread mode.*

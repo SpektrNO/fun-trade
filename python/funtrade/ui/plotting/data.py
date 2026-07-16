@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 
 
@@ -120,3 +122,64 @@ def price_chart_series(df: pd.DataFrame) -> list[str]:
         "Fair + perturbation (ε)",
     ]
     return [col for col in preferred if col in df.columns]
+
+
+def build_rsi_chart_frame(
+    momentum: pd.DataFrame,
+    *,
+    rsi_mode: str,
+    rsi_buy_min: float,
+    rsi_sell_max: float,
+    rsi_oversold: float,
+    rsi_overbought: float,
+) -> pd.DataFrame:
+    """RSI series with flat threshold lines for the Trade price panel."""
+    if momentum.empty or "rsi" not in momentum.columns:
+        return pd.DataFrame()
+    out = pd.DataFrame(
+        {
+            "time": normalize_chart_times(pd.Series(momentum.index)),
+            "RSI": momentum["rsi"].astype(float).values,
+        }
+    )
+    if rsi_mode == "mean_reversion":
+        out[f"Buy < {rsi_oversold:.0f}"] = float(rsi_oversold)
+        out[f"Sell > {rsi_overbought:.0f}"] = float(rsi_overbought)
+    else:
+        out[f"Buy ≥ {rsi_buy_min:.0f}"] = float(rsi_buy_min)
+        out[f"Sell < {rsi_sell_max:.0f}"] = float(rsi_sell_max)
+    return out
+
+
+def rsi_chart_series(df: pd.DataFrame) -> list[str]:
+    """Column order for the RSI sub-panel."""
+    cols = ["RSI"]
+    cols.extend(c for c in df.columns if c not in ("time", "RSI"))
+    return [c for c in cols if c in df.columns]
+
+
+def rsi_threshold_levels(rsi_params: dict[str, Any]) -> tuple[float, float, str, str]:
+    """Return (buy_level, sell_level, buy_label, sell_label) for chart annotations."""
+    if rsi_params.get("rsi_mode") == "mean_reversion":
+        buy = float(rsi_params["rsi_oversold"])
+        sell = float(rsi_params["rsi_overbought"])
+        return buy, sell, f"Buy < {buy:.0f}", f"Sell > {sell:.0f}"
+    buy = float(rsi_params["rsi_buy_min"])
+    sell = float(rsi_params["rsi_sell_max"])
+    return buy, sell, f"Buy ≥ {buy:.0f}", f"Sell < {sell:.0f}"
+
+
+def price_rsi_caption(*, rsi_params: dict[str, Any], currency: str) -> str:
+    """Caption for the combined price + RSI Trade chart."""
+    period = int(rsi_params.get("rsi_period", 14))
+    buy_lvl, sell_lvl, buy_lbl, sell_lbl = rsi_threshold_levels(rsi_params)
+    mode = rsi_params.get("rsi_mode", "momentum")
+    mode_txt = "mean-reversion" if mode == "mean_reversion" else "momentum"
+    action = rsi_params.get("action")
+    parts = [
+        f"**Price ({currency})** — solid: close and MAs; dashed: Bollinger ±2σ on slow MA.",
+        f"**RSI({period})** ({mode_txt}) — {buy_lbl}; {sell_lbl}.",
+    ]
+    if action:
+        parts.append(f"Latest signal: **{action}**.")
+    return " ".join(parts)

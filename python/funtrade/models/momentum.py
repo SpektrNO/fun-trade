@@ -1,4 +1,4 @@
-"""Traditional moving-average / momentum benchmark strategy (comparison baseline)."""
+"""RSI momentum benchmark strategy (comparison baseline vs perturbation)."""
 
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ class MomentumResult:
     price: float
     fast_ma: float
     slow_ma: float
+    rsi: float
     momentum: float
+    rsi_bullish: bool
     ma_bullish: bool
 
 
@@ -27,17 +29,47 @@ def _min_periods(window: int) -> int:
     return max(5, window // 4)
 
 
+def compute_rsi(price: pd.Series, period: int = 14) -> pd.Series:
+    """Wilder RSI (0–100). Uses EWM with alpha=1/period (standard approximation)."""
+    period = max(2, int(period))
+    delta = price.astype(float).diff()
+    gain = delta.clip(lower=0.0)
+    loss = (-delta).clip(lower=0.0)
+    avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0.0, pd.NA)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    # All gains / no losses → RSI 100; flat / no gains → RSI 0
+    rsi = rsi.mask(avg_loss.eq(0.0) & avg_gain.gt(0.0), 100.0)
+    rsi = rsi.mask(avg_gain.eq(0.0) & avg_loss.eq(0.0), 50.0)
+    rsi = rsi.mask(avg_gain.eq(0.0) & avg_loss.gt(0.0), 0.0)
+    return rsi.astype(float)
+
+
 def momentum_frame_from_prices(price: pd.Series, config: MomentumBenchmarkConfig) -> pd.DataFrame:
-    """MA/momentum features from a price series (used by backtest and batch recommendations)."""
+    """RSI/MA features from a price series (used by backtest and batch recommendations)."""
     fast = price.rolling(config.fast_ma_days, min_periods=_min_periods(config.fast_ma_days)).mean()
     slow = price.rolling(config.slow_ma_days, min_periods=_min_periods(config.slow_ma_days)).mean()
+    rsi = compute_rsi(price, config.rsi_period)
     mom = price / price.shift(config.momentum_lookback_days) - 1.0
+    if config.rsi_mode == "mean_reversion":
+        rsi_bullish = rsi < config.rsi_oversold
+        rsi_oversold = rsi_bullish
+        rsi_overbought = rsi > config.rsi_overbought
+    else:
+        rsi_bullish = rsi >= config.rsi_buy_min
+        rsi_oversold = rsi < config.rsi_oversold
+        rsi_overbought = rsi > config.rsi_overbought
     return pd.DataFrame(
         {
             "price": price,
             "fast_ma": fast,
             "slow_ma": slow,
+            "rsi": rsi,
             "momentum": mom,
+            "rsi_bullish": rsi_bullish,
+            "rsi_oversold": rsi_oversold,
+            "rsi_overbought": rsi_overbought,
             "ma_bullish": fast > slow,
         },
         index=price.index,
@@ -51,7 +83,7 @@ def compute_momentum_series(
     config: MomentumBenchmarkConfig | None = None,
     max_bars: int | None = None,
 ) -> pd.DataFrame:
-    """Daily MA crossover and momentum features for backtest and recommendations."""
+    """Daily RSI momentum features for backtest and recommendations."""
     if settings is None:
         settings = Settings.from_env().for_symbol(symbol)
     if config is None:
@@ -78,7 +110,7 @@ def _snapshot_from_series(
     if series.empty:
         return None
     latest = series.iloc[-1]
-    if pd.isna(latest.get("fast_ma")) or pd.isna(latest.get("slow_ma")):
+    if pd.isna(latest.get("rsi")):
         return None
     ts = series.index[-1]
     return MomentumResult(
@@ -86,21 +118,25 @@ def _snapshot_from_series(
         symbol=symbol,
         asset_class=asset_class,
         price=float(latest["price"]),
-        fast_ma=float(latest["fast_ma"]),
-        slow_ma=float(latest["slow_ma"]),
+        fast_ma=float(latest["fast_ma"]) if not pd.isna(latest.get("fast_ma")) else float("nan"),
+        slow_ma=float(latest["slow_ma"]) if not pd.isna(latest.get("slow_ma")) else float("nan"),
+        rsi=float(latest["rsi"]),
         momentum=float(latest["momentum"]) if not pd.isna(latest["momentum"]) else float("nan"),
-        ma_bullish=bool(latest["ma_bullish"]),
+        rsi_bullish=bool(latest["rsi_bullish"]),
+        ma_bullish=bool(latest["ma_bullish"]) if not pd.isna(latest.get("ma_bullish")) else False,
     )
 
 
 def momentum_regime_bullish(
     *,
-    fast_ma: float,
-    slow_ma: float,
+    rsi: float,
     momentum: float,
     config: MomentumBenchmarkConfig,
 ) -> bool:
-    if pd.isna(fast_ma) or pd.isna(slow_ma) or fast_ma <= slow_ma:
+    if config.rsi_mode == "mean_reversion":
+        if pd.isna(rsi) or rsi >= config.rsi_oversold:
+            return False
+    elif pd.isna(rsi) or rsi < config.rsi_buy_min:
         return False
     if config.require_momentum_for_buy and (
         pd.isna(momentum) or momentum < config.momentum_threshold
@@ -109,32 +145,67 @@ def momentum_regime_bullish(
     return True
 
 
+def _mean_reversion_scale_signal(
+    *,
+    rsi: float,
+    current_position: float,
+    config: MomentumBenchmarkConfig,
+) -> int:
+    if pd.isna(rsi):
+        return 0
+    if rsi < config.rsi_oversold:
+        return 1
+    if current_position > 0 and rsi > config.rsi_overbought:
+        return -1
+    return 0
+
+
+def _mean_reversion_slice_signal(
+    *,
+    rsi: float,
+    current_position: float,
+    config: MomentumBenchmarkConfig,
+) -> int:
+    if pd.isna(rsi):
+        return 0
+    if rsi < config.rsi_oversold:
+        if current_position <= 0:
+            return 1
+        return 0
+    if current_position > 0 and rsi > config.rsi_overbought:
+        return -1
+    return 0
+
+
 def momentum_backtest_signal(
     *,
-    fast_ma: float,
-    slow_ma: float,
+    rsi: float,
     momentum: float,
     current_position: float,
     config: MomentumBenchmarkConfig,
 ) -> int:
     """Daily trade intent for momentum backtest (+1 buy slice, -1 sell slice, 0 hold)."""
+    if config.rsi_mode == "mean_reversion":
+        if config.position_mode == "scale":
+            return _mean_reversion_scale_signal(
+                rsi=rsi, current_position=current_position, config=config,
+            )
+        return _mean_reversion_slice_signal(
+            rsi=rsi, current_position=current_position, config=config,
+        )
     if config.position_mode == "scale":
-        if momentum_regime_bullish(
-            fast_ma=fast_ma, slow_ma=slow_ma, momentum=momentum, config=config,
-        ):
+        if momentum_regime_bullish(rsi=rsi, momentum=momentum, config=config):
             return 1
         if (
-            config.exit_on_ma_crossunder
+            config.exit_on_rsi_weak
             and current_position > 0
-            and not pd.isna(fast_ma)
-            and not pd.isna(slow_ma)
-            and fast_ma <= slow_ma
+            and not pd.isna(rsi)
+            and rsi < config.rsi_sell_max
         ):
             return -1
         return 0
     return signal_from_momentum(
-        fast_ma=fast_ma,
-        slow_ma=slow_ma,
+        rsi=rsi,
         momentum=momentum,
         current_position=current_position,
         config=config,
@@ -143,17 +214,21 @@ def momentum_backtest_signal(
 
 def signal_from_momentum(
     *,
-    fast_ma: float,
-    slow_ma: float,
+    rsi: float,
     momentum: float,
     current_position: float,
     config: MomentumBenchmarkConfig,
 ) -> int:
-    """Return +1 (buy), -1 (sell/exit), or 0 (hold). Long-only MA/momentum rules."""
-    if pd.isna(fast_ma) or pd.isna(slow_ma):
+    """Return +1 (buy), -1 (sell/exit), or 0 (hold). Long-only RSI rules."""
+    if pd.isna(rsi):
         return 0
 
-    bullish = fast_ma > slow_ma
+    if config.rsi_mode == "mean_reversion":
+        return _mean_reversion_slice_signal(
+            rsi=rsi, current_position=current_position, config=config,
+        )
+
+    bullish = rsi >= config.rsi_buy_min
     if bullish:
         if config.require_momentum_for_buy and (
             pd.isna(momentum) or momentum < config.momentum_threshold
@@ -163,7 +238,7 @@ def signal_from_momentum(
             return 1
         return 0
 
-    if config.exit_on_ma_crossunder and current_position > 0:
+    if config.exit_on_rsi_weak and current_position > 0 and rsi < config.rsi_sell_max:
         return -1
     return 0
 
@@ -210,7 +285,7 @@ def momentum_trade_qty(
             paper=paper,
         )
 
-    # slice: one paper slice on entry, full exit on crossunder sell signal
+    # slice: one paper slice on entry, full exit on weak-RSI sell signal
     if side == "sell":
         return max(net_qty, 0.0)
     return compute_trade_qty(
@@ -236,7 +311,7 @@ def detect_latest_momentum(
     if not symbols:
         return []
 
-    tail = max(config.slow_ma_days, config.momentum_lookback_days) + 60
+    tail = max(config.slow_ma_days, config.momentum_lookback_days, config.rsi_period * 3) + 60
     bars_by_symbol = load_price_bars_batch(symbols, tail_bars=tail, settings=settings)
     results: list[MomentumResult] = []
 

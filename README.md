@@ -32,7 +32,7 @@ Two common systematic styles:
 | **Sell when** | Weakness / stop | Rich vs model while **holding** (ε > +threshold) |
 | **Delivery** | Broker script, often live-first | Backtest + paper + observability first |
 
-**Momentum** rides strength. **Mean-reversion** fades deviation from fair value. FunTrade is the second.
+**Momentum** rides strength. **Mean-reversion** fades deviation from fair value. FunTrade’s **primary** model is perturbation (the second). The **momentum benchmark** is a comparison baseline: RSI trend-following (`rsi_mode: momentum`) or classic RSI extremes (`rsi_mode: mean_reversion`, buy < 30 / sell > 70) — see [trading-guide.md](docs/trading-guide.md#momentum-signals).
 
 ### How this differs from a script bot
 
@@ -291,6 +291,8 @@ Backtest uses **`remaining_cash`** slice basis: each buy deploys `BACKTEST_TRADE
 Configure in **`config.json`** (`make setup` copies `config.json.example` on first run; your file is **gitignored** so watchlists stay local):
 
 - **`benchmark`** / **`currency`** — global universe defaults  
+- **`strategy_router`** — regime classifier (trending → momentum benchmark, ranging → perturbation)  
+- **`momentum_benchmark`** — RSI rules for the momentum model (`rsi_mode`: `momentum` or `mean_reversion`)  
 - **`etf`**, **`mutual_fund`**, **`share`** — separate symbol lists and trading params (`epsilon_threshold`, regime gates, H₁ weights, trend dampening, **`h0_calibration_days`**)  
 - **`aliases`** — watchlist id → Yahoo/Stooq fetch ticker  
 

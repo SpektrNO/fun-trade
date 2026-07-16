@@ -580,8 +580,7 @@ def run_momentum_backtest(
     for i, (_ts, row) in enumerate(test.iterrows()):
         bar_price = float(price.iloc[i])
         raw = momentum_backtest_signal(
-            fast_ma=float(row["fast_ma"]),
-            slow_ma=float(row["slow_ma"]),
+            rsi=float(row["rsi"]) if not pd.isna(row["rsi"]) else float("nan"),
             momentum=float(row["momentum"]) if not pd.isna(row["momentum"]) else float("nan"),
             current_position=position,
             config=momentum_config,
@@ -772,8 +771,7 @@ def run_mixed_backtest(
 
         if active == MODEL_MOMENTUM_BENCHMARK and mom_row is not None:
             raw = momentum_backtest_signal(
-                fast_ma=float(mom_row["fast_ma"]),
-                slow_ma=float(mom_row["slow_ma"]),
+                rsi=float(mom_row["rsi"]) if not pd.isna(mom_row["rsi"]) else float("nan"),
                 momentum=float(mom_row["momentum"]) if not pd.isna(mom_row["momentum"]) else float("nan"),
                 current_position=position,
                 config=momentum_config,

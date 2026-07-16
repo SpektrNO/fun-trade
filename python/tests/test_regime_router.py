@@ -27,10 +27,16 @@ def _mom_cfg(**kwargs) -> MomentumBenchmarkConfig:
     defaults = dict(
         fast_ma_days=50,
         slow_ma_days=200,
+        rsi_period=14,
+        rsi_mode="momentum",
+        rsi_buy_min=50.0,
+        rsi_sell_max=50.0,
+        rsi_oversold=30.0,
+        rsi_overbought=70.0,
         momentum_lookback_days=63,
         momentum_threshold=0.0,
         require_momentum_for_buy=True,
-        exit_on_ma_crossunder=True,
+        exit_on_rsi_weak=True,
         position_mode="scale",
     )
     defaults.update(kwargs)

@@ -1,6 +1,13 @@
 import pandas as pd
 
-from funtrade.ui.plotting.data import build_momentum_price_overlay, prepare_trade_chart_frames, price_chart_series
+from funtrade.ui.plotting.data import (
+    build_momentum_price_overlay,
+    build_rsi_chart_frame,
+    prepare_trade_chart_frames,
+    price_chart_series,
+    rsi_chart_series,
+    rsi_threshold_levels,
+)
 
 
 def test_build_momentum_price_overlay_includes_bollinger_bands():
@@ -40,3 +47,24 @@ def test_prepare_trade_chart_frames_merges_momentum_overlay():
     )
     cols = price_chart_series(charts["price"])
     assert cols == ["price", "Fast MA", "Slow MA", "Upper band (+2σ)", "Lower band (−2σ)"]
+
+
+def test_build_rsi_chart_frame_mean_reversion_thresholds():
+    idx = pd.date_range("2024-01-01", periods=30, freq="D", tz="UTC")
+    mom = pd.DataFrame({"rsi": [25.0 + i * 1.5 for i in range(30)]}, index=idx)
+    frame = build_rsi_chart_frame(
+        mom,
+        rsi_mode="mean_reversion",
+        rsi_buy_min=50.0,
+        rsi_sell_max=50.0,
+        rsi_oversold=30.0,
+        rsi_overbought=70.0,
+    )
+    assert list(frame.columns) == ["time", "RSI", "Buy < 30", "Sell > 70"]
+    assert frame["Buy < 30"].iloc[-1] == 30.0
+    assert rsi_chart_series(frame) == ["RSI", "Buy < 30", "Sell > 70"]
+    buy, sell, buy_lbl, sell_lbl = rsi_threshold_levels(
+        {"rsi_mode": "mean_reversion", "rsi_oversold": 30.0, "rsi_overbought": 70.0}
+    )
+    assert buy == 30.0 and sell == 70.0
+    assert buy_lbl == "Buy < 30" and sell_lbl == "Sell > 70"

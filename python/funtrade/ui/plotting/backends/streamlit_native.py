@@ -11,7 +11,9 @@ from funtrade.ui.plotting.data import (
     normalize_chart_times,
     prepare_trade_chart_frames,
     price_chart_series,
+    price_rsi_caption,
     regime_invalid_spans,
+    rsi_chart_series,
 )
 
 
@@ -139,6 +141,8 @@ class StreamlitNativeRenderer(ChartRenderer):
         trend_enable: bool = False,
         trend_gate_z: float | None = None,
         momentum_overlay: pd.DataFrame | None = None,
+        rsi_chart: pd.DataFrame | None = None,
+        rsi_params: dict | None = None,
     ) -> None:
         charts = prepare_trade_chart_frames(
             series,
@@ -154,13 +158,22 @@ class StreamlitNativeRenderer(ChartRenderer):
         )
         self.render_epsilon_chart(charts["epsilon"], epsilon_threshold=epsilon_threshold, chart_key="trade-epsilon")
 
-        st.subheader(f"Price ({currency})")
+        st.subheader(f"Price & RSI ({currency})")
         price_cols = price_chart_series(charts["price"])
-        if len(price_cols) > 1:
+        if rsi_chart is not None and not rsi_chart.empty and rsi_params is not None:
+            st.caption(price_rsi_caption(rsi_params=rsi_params, currency=currency))
+        elif len(price_cols) > 1:
             st.caption(
                 "Solid: price and moving averages. Dashed: Bollinger ±2σ bands on slow MA."
             )
-        st.line_chart(charts["price"], x="time", y=price_cols)
+        st.line_chart(charts["price"], x="time", y=price_cols, key="trade-price")
+        if rsi_chart is not None and not rsi_chart.empty:
+            st.line_chart(
+                rsi_chart,
+                x="time",
+                y=rsi_chart_series(rsi_chart),
+                key="trade-rsi",
+            )
 
         if "z_trend" in charts:
             st.subheader("Trend (z_trend)")
