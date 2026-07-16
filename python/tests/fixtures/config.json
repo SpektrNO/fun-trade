@@ -1,12 +1,8 @@
 {
   "benchmark": "EXSA.DE",
   "currency": "EUR",
-  "aliases": {
-    "NO0010336977": "0P00000O4C.IR",
-    "MYFUND.XX": "0P00001234.IR"
-  },
+  "universe": "universe.json",
   "etf": {
-    "symbols": ["VWCE.DE", "EXSA.DE"],
     "epsilon_threshold": 0.5,
     "regime_spike_sigma": 3.0,
     "regime_consecutive_bars": 3,
@@ -22,7 +18,6 @@
     "trend_use_benchmark": false
   },
   "mutual_fund": {
-    "symbols": ["NO0010336977"],
     "epsilon_threshold": 0.6,
     "regime_spike_sigma": 3.0,
     "regime_consecutive_bars": 3,
@@ -38,7 +33,6 @@
     "trend_use_benchmark": true
   },
   "share": {
-    "symbols": ["EQNR.OL"],
     "epsilon_threshold": 0.8,
     "regime_spike_sigma": 3.5,
     "regime_consecutive_bars": 3,

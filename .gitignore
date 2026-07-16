@@ -64,6 +64,7 @@ Thumbs.db
 # Logs
 *.log
 config.json
+universe.json
 portfolio.json
 portfolio_*
 fund_profiles/**
