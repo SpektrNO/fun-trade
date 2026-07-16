@@ -882,6 +882,102 @@ with tab_trade:
             rsi_params=rsi_params,
         )
 
+    st.markdown("**Manual paper trade**")
+    st.caption(
+        "Buy or sell in the paper wallet at the latest market price — independent of model signals. "
+        "Respects cash and max-share limits; fees use `PAPER_FEE_BPS`."
+    )
+    flash = st.session_state.pop("manual_trade_flash", None)
+    if flash:
+        st.success(flash)
+
+    paper_cfg = applied.to_paper_settings()
+    manual_price = latest_price(applied.symbol, settings=applied.to_settings())
+    cash_eur = float(trade_summary.get("cash_eur") or 0.0)
+    mc1, mc2, mc3 = st.columns(3)
+    mc1.metric("Cash", f"€{cash_eur:,.2f}")
+    mc2.metric("Shares held", f"{trade_pos_qty:,.4g}")
+    if manual_price:
+        mc3.metric(f"Last price ({settings.currency})", f"{manual_price:,.2f}")
+    else:
+        mc3.metric("Last price", "—")
+
+    size_mode = st.radio(
+        "Order size",
+        options=("slice", "custom", "all"),
+        format_func=lambda m: {
+            "slice": f"Default slice ({paper_cfg.trade_slice_pct:.0%} of wallet)",
+            "custom": "Custom shares",
+            "all": "Sell all (sell only)",
+        }[m],
+        horizontal=True,
+        key=f"manual_size_mode_{applied.symbol}",
+    )
+    custom_qty: float | None = None
+    if size_mode == "custom":
+        custom_qty = float(
+            st.number_input(
+                "Shares",
+                min_value=0.0,
+                value=max(trade_pos_qty, 1.0) if trade_pos_qty > 0 else 10.0,
+                step=1.0,
+                key=f"manual_qty_{applied.symbol}",
+            )
+        )
+    elif size_mode == "all":
+        custom_qty = trade_pos_qty if trade_pos_qty > 0 else None
+
+    buy_col, sell_col = st.columns(2)
+    with buy_col:
+        buy_clicked = st.button(
+            "Buy",
+            type="primary",
+            use_container_width=True,
+            key=f"manual_buy_{applied.symbol}",
+            disabled=manual_price is None or size_mode == "all",
+        )
+    with sell_col:
+        sell_clicked = st.button(
+            "Sell",
+            use_container_width=True,
+            key=f"manual_sell_{applied.symbol}",
+            disabled=manual_price is None or trade_pos_qty <= 0,
+        )
+
+    def _run_manual(side_signal: int) -> None:
+        assert manual_price is not None
+        qty_arg = custom_qty if size_mode in ("custom", "all") else None
+        if size_mode == "all" and side_signal > 0:
+            st.warning("Sell-all size applies to sells only.")
+            return
+        if size_mode in ("custom", "all") and (qty_arg is None or qty_arg <= 0):
+            st.warning("Enter a share quantity greater than zero.")
+            return
+        fill = execute_trade(
+            side_signal,
+            applied.symbol,
+            float(manual_price),
+            regime_valid=True,
+            qty_shares=qty_arg,
+            paper=paper_cfg,
+            settings=applied.to_settings(),
+        )
+        if fill:
+            st.session_state["manual_trade_flash"] = (
+                f"Manual {fill.side}: **{fill.qty_shares:,.4g}** @ {fill.price:.2f} "
+                f"(fee €{fill.fee_eur:.2f}) · cash €{fill.cash_after:,.2f}"
+            )
+            st.rerun()
+        else:
+            st.info(
+                "No fill — check cash, position size, min trade size (€1), or max-share limit."
+            )
+
+    if buy_clicked:
+        _run_manual(1)
+    if sell_clicked:
+        _run_manual(-1)
+
     if st.button("Run model paper cycle"):
         results = detect_latest_perturbations(symbols=[applied.symbol], settings=applied.to_settings())
         for p in results:
