@@ -131,6 +131,7 @@ class MomentumBacktestResult:
     price: pd.Series
     fast_ma: pd.Series
     slow_ma: pd.Series
+    rsi: pd.Series
     momentum: pd.Series
     model_signal: pd.Series
     trade_signal: pd.Series
@@ -551,6 +552,7 @@ def run_momentum_backtest(
     price = test["price"].astype(float)
     fast_ma = test["fast_ma"].astype(float)
     slow_ma = test["slow_ma"].astype(float)
+    rsi = test["rsi"].astype(float)
     momentum = test["momentum"].astype(float)
 
     wallet = _backtest_wallet_config()
@@ -668,6 +670,7 @@ def run_momentum_backtest(
         price=price,
         fast_ma=fast_ma,
         slow_ma=slow_ma,
+        rsi=rsi,
         momentum=momentum,
         model_signal=model_signals,
         trade_signal=signals,

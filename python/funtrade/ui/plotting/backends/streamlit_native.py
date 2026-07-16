@@ -132,6 +132,35 @@ class StreamlitNativeRenderer(ChartRenderer):
             kwargs["key"] = chart_key
         st.pyplot(_epsilon_figure(plot_df, epsilon_threshold=epsilon_threshold), **kwargs)
 
+    def render_price_rsi_chart(
+        self,
+        price_df: pd.DataFrame,
+        *,
+        price_cols: list[str],
+        currency: str,
+        rsi_chart: pd.DataFrame | None = None,
+        rsi_params: dict | None = None,
+        title: str | None = None,
+        chart_key: str | None = None,
+    ) -> None:
+        if title:
+            st.subheader(title)
+        if rsi_chart is not None and not rsi_chart.empty and rsi_params is not None:
+            st.caption(price_rsi_caption(rsi_params=rsi_params, currency=currency))
+        elif len(price_cols) > 1:
+            st.caption(
+                "Solid: price and moving averages. Dashed: Bollinger ±2σ bands on slow MA."
+            )
+        price_key = chart_key or "price-rsi"
+        st.line_chart(price_df, x="time", y=price_cols, key=f"{price_key}-price")
+        if rsi_chart is not None and not rsi_chart.empty:
+            st.line_chart(
+                rsi_chart,
+                x="time",
+                y=rsi_chart_series(rsi_chart),
+                key=f"{price_key}-rsi",
+            )
+
     def render_trade_charts(
         self,
         series: pd.DataFrame,
@@ -158,22 +187,15 @@ class StreamlitNativeRenderer(ChartRenderer):
         )
         self.render_epsilon_chart(charts["epsilon"], epsilon_threshold=epsilon_threshold, chart_key="trade-epsilon")
 
-        st.subheader(f"Price & RSI ({currency})")
-        price_cols = price_chart_series(charts["price"])
-        if rsi_chart is not None and not rsi_chart.empty and rsi_params is not None:
-            st.caption(price_rsi_caption(rsi_params=rsi_params, currency=currency))
-        elif len(price_cols) > 1:
-            st.caption(
-                "Solid: price and moving averages. Dashed: Bollinger ±2σ bands on slow MA."
-            )
-        st.line_chart(charts["price"], x="time", y=price_cols, key="trade-price")
-        if rsi_chart is not None and not rsi_chart.empty:
-            st.line_chart(
-                rsi_chart,
-                x="time",
-                y=rsi_chart_series(rsi_chart),
-                key="trade-rsi",
-            )
+        self.render_price_rsi_chart(
+            charts["price"],
+            price_cols=price_chart_series(charts["price"]),
+            currency=currency,
+            rsi_chart=rsi_chart,
+            rsi_params=rsi_params,
+            title=f"Price & RSI ({currency})",
+            chart_key="trade-price-rsi",
+        )
 
         if "z_trend" in charts:
             st.subheader("Trend (z_trend)")

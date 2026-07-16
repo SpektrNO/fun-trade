@@ -1263,6 +1263,30 @@ def run_backtest_for_ui(params: UiParams) -> dict:
     momentum_view: dict = {"error": momentum_error}
     if momentum_result is not None:
         mm = momentum_result.metrics
+        mom_cfg = settings.universe.momentum_benchmark if settings.universe else None
+        rsi_chart = pd.DataFrame()
+        rsi_params: dict | None = None
+        if mom_cfg is not None:
+            rsi_src = pd.DataFrame(
+                {"rsi": momentum_result.rsi.values},
+                index=momentum_result.price.index,
+            )
+            rsi_chart = build_rsi_chart_frame(
+                rsi_src,
+                rsi_mode=mom_cfg.rsi_mode,
+                rsi_buy_min=mom_cfg.rsi_buy_min,
+                rsi_sell_max=mom_cfg.rsi_sell_max,
+                rsi_oversold=mom_cfg.rsi_oversold,
+                rsi_overbought=mom_cfg.rsi_overbought,
+            )
+            rsi_params = {
+                "rsi_mode": mom_cfg.rsi_mode,
+                "rsi_period": mom_cfg.rsi_period,
+                "rsi_buy_min": mom_cfg.rsi_buy_min,
+                "rsi_sell_max": mom_cfg.rsi_sell_max,
+                "rsi_oversold": mom_cfg.rsi_oversold,
+                "rsi_overbought": mom_cfg.rsi_overbought,
+            }
         momentum_view = {
             "error": None,
             "net_profit_eur": mm.get("net_profit_eur", momentum_result.total_return),
@@ -1274,6 +1298,8 @@ def run_backtest_for_ui(params: UiParams) -> dict:
             "fast_ma_days": mm.get("fast_ma_days"),
             "slow_ma_days": mm.get("slow_ma_days"),
             "momentum_lookback_days": mm.get("momentum_lookback_days"),
+            "rsi_period": mom_cfg.rsi_period if mom_cfg else None,
+            "rsi_mode": mom_cfg.rsi_mode if mom_cfg else None,
             "equity_curve": pd.DataFrame(
                 {
                     "time": momentum_result.equity_curve.index,
@@ -1288,6 +1314,8 @@ def run_backtest_for_ui(params: UiParams) -> dict:
                     "Slow MA": momentum_result.slow_ma.values,
                 }
             ),
+            "rsi_chart": rsi_chart,
+            "rsi_params": rsi_params,
         }
 
     return {

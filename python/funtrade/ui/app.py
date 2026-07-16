@@ -781,11 +781,13 @@ with tab_backtest:
                 )
             ma_chart = mom.get("ma_chart") if isinstance(mom, dict) else None
             if isinstance(ma_chart, pd.DataFrame) and not ma_chart.empty:
-                chart_renderer.render_time_series(
+                chart_renderer.render_price_rsi_chart(
                     ma_chart,
-                    x="time",
-                    y=["price", "Fast MA", "Slow MA"],
-                    title="Momentum benchmark — price and moving averages",
+                    price_cols=["price", "Fast MA", "Slow MA"],
+                    currency=settings.currency,
+                    rsi_chart=mom.get("rsi_chart") if isinstance(mom.get("rsi_chart"), pd.DataFrame) else None,
+                    rsi_params=mom.get("rsi_params") if isinstance(mom.get("rsi_params"), dict) else None,
+                    title="Momentum benchmark — price, moving averages & RSI",
                     chart_key=f"{chart_key}-momentum-ma",
                 )
 

@@ -33,6 +33,20 @@ class ChartRenderer(ABC):
         """ε with ±threshold bands and regime_valid shading when present."""
 
     @abstractmethod
+    def render_price_rsi_chart(
+        self,
+        price_df: pd.DataFrame,
+        *,
+        price_cols: list[str],
+        currency: str,
+        rsi_chart: pd.DataFrame | None = None,
+        rsi_params: dict | None = None,
+        title: str | None = None,
+        chart_key: str | None = None,
+    ) -> None:
+        """Price panel with optional RSI sub-chart (moving averages, threshold lines)."""
+
+    @abstractmethod
     def render_trade_charts(
         self,
         series: pd.DataFrame,

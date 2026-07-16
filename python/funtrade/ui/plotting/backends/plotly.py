@@ -244,6 +244,34 @@ class PlotlyRenderer(ChartRenderer):
             key=_chart_key("eps", chart_key or "epsilon"),
         )
 
+    def render_price_rsi_chart(
+        self,
+        price_df: pd.DataFrame,
+        *,
+        price_cols: list[str],
+        currency: str,
+        rsi_chart: pd.DataFrame | None = None,
+        rsi_params: dict | None = None,
+        title: str | None = None,
+        chart_key: str | None = None,
+    ) -> None:
+        if title:
+            st.subheader(title)
+        if rsi_chart is not None and not rsi_chart.empty and rsi_params is not None:
+            st.caption(price_rsi_caption(rsi_params=rsi_params, currency=currency))
+        elif len(price_cols) > 1:
+            st.caption("Solid: price and moving averages.")
+        _show(
+            _price_rsi_figure(
+                price_df,
+                price_cols=price_cols,
+                rsi_df=rsi_chart,
+                rsi_params=rsi_params,
+                currency=currency,
+            ),
+            key=_chart_key("price-rsi", chart_key or title or "price-rsi"),
+        )
+
     def render_trade_charts(
         self,
         series: pd.DataFrame,
@@ -273,21 +301,13 @@ class PlotlyRenderer(ChartRenderer):
 
         st.subheader(f"Price & RSI ({currency})")
         price_cols = price_chart_series(charts["price"])
-        if rsi_chart is not None and not rsi_chart.empty and rsi_params is not None:
-            st.caption(price_rsi_caption(rsi_params=rsi_params, currency=currency))
-        elif len(price_cols) > 1:
-            st.caption(
-                "Solid: price and moving averages. Dashed: Bollinger ±2σ bands on slow MA."
-            )
-        _show(
-            _price_rsi_figure(
-                charts["price"],
-                price_cols=price_cols,
-                rsi_df=rsi_chart,
-                rsi_params=rsi_params,
-                currency=currency,
-            ),
-            key=_chart_key("trade", "price-rsi"),
+        self.render_price_rsi_chart(
+            charts["price"],
+            price_cols=price_cols,
+            currency=currency,
+            rsi_chart=rsi_chart,
+            rsi_params=rsi_params,
+            chart_key="trade-price-rsi",
         )
 
         if "z_trend" in charts:
