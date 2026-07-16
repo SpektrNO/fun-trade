@@ -954,12 +954,14 @@ with tab_recommendations:
         if mom_cfg and mom_cfg.rsi_mode == "mean_reversion":
             st.caption(
                 f"RSI mean-reversion — **buy** when RSI < {mom_cfg.rsi_oversold:.0f}; "
-                f"**sell** when RSI > {mom_cfg.rsi_overbought:.0f}."
+                f"**sell** when RSI > {mom_cfg.rsi_overbought:.0f}. "
+                "BUY shows even if you already hold (position cap applies only on paper fills)."
             )
         else:
             st.caption(
                 "RSI momentum — **buy** when RSI ≥ buy threshold (default 50); "
-                "**sell** when RSI drops below sell threshold."
+                "**sell** when RSI drops below sell threshold. "
+                "BUY shows even if you already hold (position cap applies only on paper fills)."
             )
     else:
         st.caption("Reads latest **ε** from detect.")

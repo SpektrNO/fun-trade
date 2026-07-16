@@ -177,6 +177,39 @@ def _signal_action(sig: int) -> str:
     return "HOLD"
 
 
+def _recommendation_momentum_signal(
+    *,
+    rsi: float,
+    momentum: float,
+    position_shares: float,
+    config,
+) -> int:
+    """Momentum signal for Recommendations — buys ignore holdings / position cap.
+
+    Paper ``position_limit_shares`` and slice ``already long`` gating apply to
+    execution (paper/backtest), not to recommendation intent. Sells still require
+    a long position so we do not suggest exits while flat.
+    """
+    entry = momentum_backtest_signal(
+        rsi=rsi,
+        momentum=momentum,
+        current_position=0.0,
+        config=config,
+    )
+    if entry > 0:
+        return 1
+    if position_shares > 0:
+        exit_sig = momentum_backtest_signal(
+            rsi=rsi,
+            momentum=momentum,
+            current_position=position_shares,
+            config=config,
+        )
+        if exit_sig < 0:
+            return -1
+    return 0
+
+
 def _recommendation_note(
     *,
     epsilon: float,
@@ -595,10 +628,10 @@ def _fetch_momentum_recommendations(
             portfolio_shares=shares_map.get(symbol),
             portfolio_value=values_map.get(symbol),
         )
-        sig = momentum_backtest_signal(
+        sig = _recommendation_momentum_signal(
             rsi=p.rsi,
             momentum=p.momentum,
-            current_position=pos_qty,
+            position_shares=pos_qty,
             config=config,
         )
         rows.append(
@@ -793,8 +826,6 @@ def _momentum_recommendation_note(
         if signal < 0:
             return f"RSI {rsi_txt} > {config.rsi_overbought:.0f} — overbought exit"
         if not pd.isna(rsi) and rsi < config.rsi_oversold and position_shares > 0:
-            if config.position_mode == "slice":
-                return f"RSI {rsi_txt} oversold; already long (slice mode — one entry)"
             return f"RSI {rsi_txt} oversold; hold"
         if not pd.isna(rsi) and rsi > config.rsi_overbought and position_shares <= 0:
             return f"RSI {rsi_txt} > {config.rsi_overbought:.0f}; flat (long-only)"
@@ -816,8 +847,6 @@ def _momentum_recommendation_note(
     if rsi_bullish and config.require_momentum_for_buy:
         if pd.isna(momentum) or momentum < config.momentum_threshold:
             return f"RSI {rsi_txt} bullish, but {config.momentum_lookback_days}d return {mom_pct} below threshold"
-        if config.position_mode == "slice" and position_shares > 0:
-            return f"RSI {rsi_txt} bullish; already long (slice mode — one entry)"
         return f"RSI {rsi_txt} bullish; hold"
     if not rsi_bullish and position_shares <= 0:
         return f"RSI {rsi_txt} < {config.rsi_buy_min:.0f}; flat"

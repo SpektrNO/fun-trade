@@ -3,7 +3,63 @@ import pytest
 from dataclasses import replace
 
 from funtrade.models.perturbation import signal_from_epsilon
-from funtrade.ui.service import _recommendation_note, _recommendation_position_qty, _sort_recommendations_by_position, default_ui_params, format_position_shares, params_draft_pending
+from funtrade.ui.service import (
+    _recommendation_momentum_signal,
+    _recommendation_note,
+    _recommendation_position_qty,
+    _sort_recommendations_by_position,
+    default_ui_params,
+    format_position_shares,
+    params_draft_pending,
+)
+
+
+def test_recommendation_momentum_buy_ignores_existing_position():
+    """Recommendations show BUY intent even when already long (no slice/cap gate)."""
+    from funtrade.universe_config import MomentumBenchmarkConfig
+
+    cfg = MomentumBenchmarkConfig(
+        fast_ma_days=50,
+        slow_ma_days=200,
+        rsi_period=14,
+        rsi_mode="momentum",
+        rsi_buy_min=50.0,
+        rsi_sell_max=50.0,
+        rsi_oversold=30.0,
+        rsi_overbought=70.0,
+        momentum_lookback_days=63,
+        momentum_threshold=0.0,
+        require_momentum_for_buy=False,
+        exit_on_rsi_weak=True,
+        position_mode="slice",
+    )
+    assert (
+        _recommendation_momentum_signal(
+            rsi=62.0,
+            momentum=0.05,
+            position_shares=500.0,
+            config=cfg,
+        )
+        == 1
+    )
+    assert (
+        _recommendation_momentum_signal(
+            rsi=40.0,
+            momentum=-0.02,
+            position_shares=500.0,
+            config=cfg,
+        )
+        == -1
+    )
+    assert (
+        _recommendation_momentum_signal(
+            rsi=40.0,
+            momentum=-0.02,
+            position_shares=0.0,
+            config=cfg,
+        )
+        == 0
+    )
 
 
 def test_recommendation_signal_buy():
