@@ -1,0 +1,15 @@
+{
+  "aliases": {
+    "NO0010336977": "0P00000O4C.IR",
+    "MYFUND.XX": "0P00001234.IR"
+  },
+  "etf": {
+    "symbols": ["VWCE.DE", "EXSA.DE"]
+  },
+  "mutual_fund": {
+    "symbols": ["NO0010336977"]
+  },
+  "share": {
+    "symbols": ["EQNR.OL"]
+  }
+}

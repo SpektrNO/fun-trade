@@ -1,0 +1,32 @@
+{
+  "_comment": "Shared watchlist and fetch-ticker aliases. Referenced from config.json via \"universe\": \"universe.json\".",
+  "aliases": {
+    "NO0010336977": "0P00000O4C.IR",
+    "DNB-BARNE.IR": "0P00000O4C.IR",
+    "DNB.BARNEFOND": "0P00000O4C.IR",
+    "HANDELSBANKEN.HE": "0P00014CZ5.IR",
+    "DNB.TEKNOLOGIA": "0P00000MVB.IR",
+    "Vanguard.S&P.500.UCITS.ETF": "VUSA.DE",
+  },
+  "etf": {
+    "symbols": [
+      "EXSA.DE",
+      "VWCE.DE",
+      "EUNL.DE",
+      "IS3N.DE",
+      "SXR8.DE",
+      "IBCI.DE"
+      "Vanguard.S&P.500.UCITS.ETF",
+    ]
+  },
+  "mutual_fund": {
+    "symbols": [
+      "NO0010336977",
+      "HANDELSBANKEN.HE",
+      "DNB.TEKNOLOGIA"
+    ]
+  },
+  "share": {
+    "symbols": []
+  }
+}

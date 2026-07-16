@@ -1008,7 +1008,7 @@ with tab_recommendations:
     if "recommendations_df" in st.session_state:
         rec = st.session_state.recommendations_df
         if rec.empty:
-            st.warning("Watchlist is empty. Add symbols under `etf`, `mutual_fund`, or `share` in config.json.")
+            st.warning("Watchlist is empty. Add symbols under `etf`, `mutual_fund`, or `share` in universe.json.")
         else:
             portfolio_name = rec.attrs.get("portfolio_name")
             portfolio_file = rec.attrs.get("portfolio_file")

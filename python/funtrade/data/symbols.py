@@ -1,4 +1,4 @@
-"""Watchlist symbol aliases: ISIN / friendly name → data-provider ticker."""
+"""Watchlist symbol aliases: ISIN / friendly name → data-provider ticker (universe.json)."""
 
 from __future__ import annotations
 

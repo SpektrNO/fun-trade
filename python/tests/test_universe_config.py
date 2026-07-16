@@ -65,3 +65,12 @@ def test_config_aliases_override_builtin():
 
     assert symbol_aliases()["MYFUND.XX"] == "0P00001234.IR"
     assert resolve_fetch_ticker("MYFUND.XX") == "0P00001234.IR"
+
+
+def test_load_universe_from_external_file():
+    reset_universe_config_cache()
+    cfg = load_universe_config(force_reload=True)
+    assert cfg.universe_path is not None
+    assert cfg.universe_path.name == "universe.json"
+    assert "VWCE.DE" in cfg.etf.symbols
+    assert cfg.aliases["MYFUND.XX"] == "0P00001234.IR"

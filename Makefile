@@ -51,8 +51,9 @@ help-ngrok: ## ngrok tunnel targets (public URL to local Streamlit)
 setup: ## First-time setup: copy .env + config.json + portfolio.json, install Python deps
 	@test -f $(ROOT)/.env || cp $(ROOT)/.env.example $(ROOT)/.env
 	@test -f $(ROOT)/config.json || cp $(ROOT)/config.json.example $(ROOT)/config.json
+	@test -f $(ROOT)/universe.json || cp $(ROOT)/universe.json.example $(ROOT)/universe.json
 	@test -f $(ROOT)/portfolio.json || cp $(ROOT)/portfolio.json.example $(ROOT)/portfolio.json
-	@echo "Created .env, config.json, and portfolio.json (edit locally; gitignored except *.example)"
+	@echo "Created .env, config.json, universe.json, and portfolio.json (edit locally; gitignored except *.example)"
 	$(MAKE) build
 
 build: ## Install Python package (uv sync)

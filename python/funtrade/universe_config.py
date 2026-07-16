@@ -248,6 +248,7 @@ class UniverseConfig:
     mutual_fund: AssetClassConfig
     share: AssetClassConfig
     config_path: Path | None = None
+    universe_path: Path | None = None
 
     def watchlist(self) -> list[str]:
         return list(self.etf.symbols) + list(self.mutual_fund.symbols) + list(self.share.symbols)
@@ -296,6 +297,51 @@ def config_path() -> Path:
         if candidate.is_file():
             return candidate
     return (repo_root() / raw).resolve()
+
+
+def _resolve_config_relative(path_str: str, config_file: Path) -> Path:
+    """Resolve a path relative to the main config file (then cwd, then repo root)."""
+    path = Path(path_str)
+    if path.is_file():
+        return path.resolve()
+    if path.is_absolute():
+        return path
+    for base in (config_file.parent, Path.cwd(), repo_root()):
+        candidate = (base / path_str).resolve()
+        if candidate.is_file():
+            return candidate
+    return (config_file.parent / path_str).resolve()
+
+
+def _merge_universe_file(payload: dict[str, Any], config_file: Path) -> tuple[dict[str, Any], Path | None]:
+    """Load aliases and per-class symbols from a shared universe file when configured."""
+    universe_ref = os.getenv("FUNTRADE_UNIVERSE") or payload.get("universe")
+    if not universe_ref:
+        return payload, None
+
+    uni_path = _resolve_config_relative(str(universe_ref), config_file)
+    if not uni_path.is_file():
+        raise FileNotFoundError(
+            f"Universe file not found: {uni_path} (referenced as {universe_ref!r} in {config_file})"
+        )
+
+    uni_payload = json.loads(uni_path.read_text(encoding="utf-8"))
+    if not isinstance(uni_payload, dict):
+        raise ValueError(f"{uni_path}: root must be a JSON object")
+
+    merged = dict(payload)
+    uni_aliases = _parse_aliases(uni_payload.get("aliases"))
+    main_aliases = _parse_aliases(payload.get("aliases"))
+    merged["aliases"] = {**uni_aliases, **main_aliases}
+
+    for name in ASSET_CLASSES:
+        main_block = dict(payload.get(name) or {})
+        uni_block = uni_payload.get(name) if isinstance(uni_payload.get(name), dict) else {}
+        if "symbols" in uni_block:
+            main_block["symbols"] = uni_block["symbols"]
+        merged[name] = main_block
+
+    return merged, uni_path
 
 
 def _parse_asset_class(name: AssetClassName, raw: dict[str, Any] | None, defaults: dict[str, Any]) -> AssetClassConfig:
@@ -405,6 +451,8 @@ def load_universe_config(*, force_reload: bool = False) -> UniverseConfig:
     if not isinstance(payload, dict):
         raise ValueError(f"{path}: root must be a JSON object")
 
+    payload, universe_path = _merge_universe_file(payload, path)
+
     benchmark = str(payload.get("benchmark", "EXSA.DE"))
     currency = str(payload.get("currency", "EUR"))
     aliases = _parse_aliases(payload.get("aliases"))
@@ -419,6 +467,7 @@ def load_universe_config(*, force_reload: bool = False) -> UniverseConfig:
         mutual_fund=_parse_asset_class("mutual_fund", payload.get("mutual_fund"), _DEFAULT_MUTUAL_FUND),
         share=_parse_asset_class("share", payload.get("share"), _DEFAULT_SHARE),
         config_path=path,
+        universe_path=universe_path,
     )
     _cached = universe
     return universe

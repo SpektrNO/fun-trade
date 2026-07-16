@@ -162,16 +162,17 @@ Macro series are z-scored over **252 days** before blending into H₀ — slow m
 
 ---
 
-## Universe and symbols (`config.json`)
+## Universe and symbols (`universe.json` + `config.json`)
 
-| Field | Meaning |
-|-------|---------|
-| **`benchmark`** | Default sector ETF for relative strength (e.g. `EXSA.DE`) |
-| **`currency`** | Display label for prices (EUR) |
-| **`aliases`** | Map your Nordnet/ISIN label → Yahoo/Stooq ticker for ingest |
-| **`etf` / `mutual_fund` / `share` → `symbols`** | Watchlist per asset class |
+| Field | Where | Meaning |
+|-------|--------|---------|
+| **`universe`** | `config.json` | Path to shared watchlist file (default: `universe.json`) |
+| **`benchmark`** | `config.json` | Default sector ETF for relative strength (e.g. `EXSA.DE`) |
+| **`currency`** | `config.json` | Display label for prices (EUR) |
+| **`aliases`** | `universe.json` | Map your Nordnet/ISIN label → Yahoo/Stooq ticker for ingest |
+| **`etf` / `mutual_fund` / `share` → `symbols`** | `universe.json` | Watchlist per asset class (shared across tuning presets) |
 
-Each asset-class block shares the same parameter names; tune ETFs and mutual funds separately (volume, calibration window, trend benchmark).
+Each asset-class block in `config.json` shares the same parameter names; tune ETFs and mutual funds separately (volume, calibration window, trend benchmark).
 
 ---
 
