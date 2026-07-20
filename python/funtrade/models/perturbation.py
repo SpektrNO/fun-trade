@@ -163,6 +163,20 @@ def compute_perturbation_series(
         "z_trend": z_trend,
         "regime_valid": regime_valid,
         "price": price,
+        "fair_value": band["equilibrium"].astype(float),
+        "band_lo": band["lower"].astype(float),
+        "band_hi": band["upper"].astype(float),
+        "season_alone": (
+            band["season_alone"].astype(float)
+            if "season_alone" in band.columns
+            else band["equilibrium"].astype(float)
+        ),
+        "h0_compare": (
+            band["compare"].astype(float)
+            if "compare" in band.columns
+            else price.astype(float)
+        ),
+        "epsilon_threshold": float(settings.epsilon_threshold),
     }
     for col in h1_scores.columns:
         out[f"h1_{col}"] = h1_scores[col]

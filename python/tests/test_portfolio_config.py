@@ -42,6 +42,36 @@ def test_load_portfolio_config_weight_pct(tmp_path, monkeypatch):
     assert cfg.symbols() == ("VWCE.DE", "AGGH.DE")
 
 
+def test_load_portfolio_config_parses_value_nok_and_value_us(tmp_path, monkeypatch):
+    reset_portfolio_config_cache()
+    path = tmp_path / "portfolio.json"
+    path.write_text(
+        json.dumps(
+            {
+                "name": "Test",
+                "currency": "NOK",
+                "valuation_mode": "weight_pct",
+                "holdings": [
+                    {
+                        "symbol": "VWCE.DE",
+                        "weight_pct": 60.0,
+                        "value_nok": 100000,
+                        "value_us": 12000,
+                        "note": "mixed currency values",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FUNTRADE_PORTFOLIO", str(path))
+    cfg = load_portfolio_config(force_reload=True)
+    assert cfg is not None
+    (h,) = cfg.holdings
+    assert h.value_nok == pytest.approx(100000.0)
+    assert h.value_usd == pytest.approx(12000.0)
+
+
 def test_load_portfolio_config_caches_on_second_call(tmp_path, monkeypatch):
     reset_portfolio_config_cache()
     path = tmp_path / "portfolio.json"

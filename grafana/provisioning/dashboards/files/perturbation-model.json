@@ -1,5 +1,23 @@
 {
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 0,
+        "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+        "enable": true,
+        "hide": false,
+        "iconColor": "semi-dark-red",
+        "name": "Regime invalid",
+        "target": {
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH ordered AS (\n  SELECT time,\n         regime_valid,\n         lag(regime_valid) OVER (ORDER BY time) AS prev_rv\n  FROM perturbation_daily\n  WHERE symbol = '$symbol' AND $__timeFilter(time)\n),\nstarts AS (\n  SELECT time,\n         regime_valid,\n         SUM(\n           CASE\n             WHEN regime_valid = false\n              AND (prev_rv IS NULL OR prev_rv = true) THEN 1\n             ELSE 0\n           END\n         ) OVER (ORDER BY time) AS grp\n  FROM ordered\n)\nSELECT\n  MIN(time) AS time,\n  MAX(time) + interval '1 day' AS \"timeEnd\",\n  'Regime invalid — buys blocked' AS text\nFROM starts\nWHERE regime_valid = false\nGROUP BY grp\nORDER BY 1",
+          "refId": "Anno"
+        }
+      }
+    ]
+  },
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -10,55 +28,188 @@
   "panels": [
     {
       "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "description": "Shared EUR axis: price, season-alone (exp(season)), H₀ fair (season+μ+macro+trend), and ±σ band. Gap fair≫season ⇒ macro tilt.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "lineWidth": 1 },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true,
+            "axisPlacement": "auto"
+          },
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "price" },
+            "properties": [
+              { "id": "displayName", "value": "Price" },
+              { "id": "custom.lineWidth", "value": 2 },
+              { "id": "color", "value": { "fixedColor": "#73BF69", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "season" },
+            "properties": [
+              { "id": "displayName", "value": "Season alone" },
+              { "id": "custom.lineWidth", "value": 2 },
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [6, 3] } },
+              { "id": "color", "value": { "fixedColor": "#5794F2", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "fair" },
+            "properties": [
+              { "id": "displayName", "value": "H0 fair" },
+              { "id": "custom.lineWidth", "value": 2 },
+              { "id": "color", "value": { "fixedColor": "#FADE2A", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "band_lo" },
+            "properties": [
+              { "id": "displayName", "value": "Band lo" },
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [4, 4] } },
+              { "id": "color", "value": { "fixedColor": "#8AB8FF", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "band_hi" },
+            "properties": [
+              { "id": "displayName", "value": "Band hi" },
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [4, 4] } },
+              { "id": "color", "value": { "fixedColor": "#FF9830", "mode": "fixed" } }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 0 },
+      "id": 10,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "time_series",
+          "rawSql": "SELECT time AS \"time\", price AS \"price\", season_alone AS \"season\", fair_value AS \"fair\", band_lo AS \"band_lo\", band_hi AS \"band_hi\" FROM perturbation_daily WHERE symbol = '$symbol' AND fair_value IS NOT NULL AND $__timeFilter(time) ORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "H0 band — price / season / fair ($symbol)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "description": "ε with ±epsilon_threshold guidelines (from detect settings). Red regions = regime_valid=false.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "spanNulls": true },
           "unit": "none",
           "decimals": 2
         },
         "overrides": [
           {
             "matcher": { "id": "byName", "options": "epsilon" },
-            "properties": [{ "id": "displayName", "value": "ε (σ, signed)" }]
+            "properties": [
+              { "id": "displayName", "value": "ε" },
+              { "id": "custom.lineWidth", "value": 2 },
+              { "id": "color", "value": { "fixedColor": "#F2495C", "mode": "fixed" } }
+            ]
           },
           {
-            "matcher": { "id": "byName", "options": "magnitude" },
-            "properties": [{ "id": "displayName", "value": "|ε| (σ)" }]
+            "matcher": { "id": "byName", "options": "thresh_hi" },
+            "properties": [
+              { "id": "displayName", "value": "+threshold" },
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [6, 4] } },
+              { "id": "color", "value": { "fixedColor": "#AAAAAA", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "thresh_lo" },
+            "properties": [
+              { "id": "displayName", "value": "−threshold" },
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [6, 4] } },
+              { "id": "color", "value": { "fixedColor": "#AAAAAA", "mode": "fixed" } }
+            ]
           }
         ]
       },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 11 },
       "id": 1,
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
       "targets": [
         {
           "datasource": { "type": "postgres", "uid": "TimescaleDB" },
           "format": "time_series",
-          "rawSql": "SELECT time AS \"time\", epsilon AS \"epsilon\" FROM perturbation_daily WHERE symbol = '$symbol' AND $__timeFilter(time) ORDER BY time",
+          "rawSql": "SELECT time AS \"time\", epsilon AS \"epsilon\", epsilon_threshold AS \"thresh_hi\", -epsilon_threshold AS \"thresh_lo\" FROM perturbation_daily WHERE symbol = '$symbol' AND $__timeFilter(time) ORDER BY time",
           "refId": "A"
-        },
-        {
-          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
-          "format": "time_series",
-          "rawSql": "SELECT time AS \"time\", magnitude AS \"magnitude\" FROM perturbation_daily WHERE symbol = '$symbol' AND $__timeFilter(time) ORDER BY time",
-          "refId": "B"
         }
       ],
-      "title": "Perturbation ε ($symbol)",
+      "title": "Perturbation ε ± threshold ($symbol)",
       "type": "timeseries"
     },
     {
       "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "description": "valid = mean-reversion buys allowed; invalid = consecutive |ε| spike streak (or liquidity halt) blocked buys.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "fillOpacity": 70, "lineWidth": 0 },
+          "mappings": [
+            { "type": "value", "options": { "valid": { "color": "green", "index": 0, "text": "valid" } } },
+            { "type": "value", "options": { "invalid": { "color": "semi-dark-red", "index": 1, "text": "invalid" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "semi-dark-red", "value": 0 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 20 },
+      "id": 5,
+      "options": {
+        "alignValue": "center",
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "showValue": "auto",
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "time_series",
+          "rawSql": "SELECT time AS \"time\", CASE WHEN regime_valid THEN 'valid' ELSE 'invalid' END AS \"regime\" FROM perturbation_daily WHERE symbol = '$symbol' AND $__timeFilter(time) ORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Regime validity ($symbol)",
+      "type": "state-timeline"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
       "fieldConfig": { "defaults": {}, "overrides": [] },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 10 },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 23 },
       "id": 2,
       "options": { "showHeader": true },
       "targets": [
         {
           "datasource": { "type": "postgres", "uid": "TimescaleDB" },
           "format": "table",
-          "rawSql": "SELECT time, symbol, asset_class, epsilon, magnitude, regime_valid, z_return, z_rel_strength, price FROM perturbation_daily WHERE symbol = '$symbol' AND $__timeFilter(time) ORDER BY time DESC LIMIT 200",
+          "rawSql": "SELECT time, symbol, price, fair_value, band_lo, band_hi, epsilon, epsilon_threshold, magnitude, regime_valid, z_return, z_rel_strength FROM perturbation_daily WHERE symbol = '$symbol' AND $__timeFilter(time) ORDER BY time DESC LIMIT 200",
           "refId": "A"
         }
       ],
@@ -68,7 +219,7 @@
     {
       "datasource": { "type": "postgres", "uid": "TimescaleDB" },
       "fieldConfig": { "defaults": {}, "overrides": [] },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 32 },
       "id": 3,
       "options": { "showHeader": true },
       "targets": [
@@ -85,7 +236,7 @@
     {
       "datasource": { "type": "postgres", "uid": "TimescaleDB" },
       "fieldConfig": { "defaults": {}, "overrides": [] },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 28 },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 39 },
       "id": 4,
       "options": { "showHeader": true },
       "targets": [
@@ -123,10 +274,10 @@
       }
     ]
   },
-  "time": { "from": "now-90d", "to": "now" },
+  "time": { "from": "now-2y", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
   "title": "Perturbation Model",
   "uid": "funtrade-perturbation-model",
-  "version": 2
+  "version": 10
 }

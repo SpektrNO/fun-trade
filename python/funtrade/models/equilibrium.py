@@ -112,6 +112,8 @@ class EquilibriumModel:
         lower = np.exp(log_mean - band_mult * self.sigma)
         # Log-distance from fair (H₀) — used as z_return input so ε matches the chart band.
         residual = x - self.mu - h0_adj - trend_adj
+        # Observation in the same price units as the band (fair * exp(residual) ≡ price).
+        compare = np.exp(log_mean + residual)
         return pd.DataFrame(
             {
                 "price": prices,
@@ -119,6 +121,8 @@ class EquilibriumModel:
                 "upper": upper,
                 "lower": lower,
                 "residual": residual,
+                "compare": compare,
+                "season_alone": np.exp(season),
             },
             index=prices.index,
         )

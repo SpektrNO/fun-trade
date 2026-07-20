@@ -21,6 +21,8 @@ class PortfolioHolding:
     weight_pct: float | None = None
     shares: float | None = None
     value_eur: float | None = None
+    value_nok: float | None = None
+    value_usd: float | None = None
     note: str | None = None
 
 
@@ -101,12 +103,17 @@ def _parse_holding(raw: dict, *, valuation_mode: PortfolioValuationMode) -> Port
     weight_pct = raw.get("weight_pct")
     shares = raw.get("shares")
     value_eur = raw.get("value_eur")
+    value_nok = raw.get("value_nok")
+    # Accept both `value_us` and `value_usd` for convenience.
+    value_usd = raw.get("value_usd", raw.get("value_us"))
     note = raw.get("note")
     note_str = str(note).strip() if note else None
 
     w = float(weight_pct) if weight_pct is not None else None
     sh = float(shares) if shares is not None else None
     val = float(value_eur) if value_eur is not None else None
+    val_nok = float(value_nok) if value_nok is not None else None
+    val_usd = float(value_usd) if value_usd is not None else None
 
     if valuation_mode == "weight_pct" and w is None:
         raise ValueError(f"portfolio holding {symbol!r}: weight_pct required when valuation_mode=weight_pct")
@@ -115,7 +122,15 @@ def _parse_holding(raw: dict, *, valuation_mode: PortfolioValuationMode) -> Port
     if valuation_mode == "value_eur" and val is None:
         raise ValueError(f"portfolio holding {symbol!r}: value_eur required when valuation_mode=value_eur")
 
-    return PortfolioHolding(symbol=symbol, weight_pct=w, shares=sh, value_eur=val, note=note_str)
+    return PortfolioHolding(
+        symbol=symbol,
+        weight_pct=w,
+        shares=sh,
+        value_eur=val,
+        value_nok=val_nok,
+        value_usd=val_usd,
+        note=note_str,
+    )
 
 
 def _parse_portfolio_file(path: Path) -> PortfolioConfig:

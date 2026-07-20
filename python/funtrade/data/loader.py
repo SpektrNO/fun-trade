@@ -358,79 +358,84 @@ def upsert_perturbation_daily(
     settings = settings or Settings.from_env()
     asset_class = settings.asset_class or "etf"
     daily = normalize_daily_bars(series)
-    has_regime = "market_regime" in daily.columns and "selected_model" in daily.columns
+    default_threshold = float(settings.epsilon_threshold)
     rows: list[tuple] = []
     for ts, row in daily.iterrows():
         t = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
-        base = (
-            t,
-            symbol,
-            asset_class,
-            float(row["epsilon"]),
-            float(row["magnitude"]),
-            bool(row.get("regime_valid", True)),
-            float(row["z_return"]) if pd.notna(row.get("z_return")) else None,
-            float(row["z_volume"]) if pd.notna(row.get("z_volume")) else None,
-            float(row["z_rel_strength"]) if pd.notna(row.get("z_rel_strength")) else None,
-            float(row["price"]) if pd.notna(row.get("price")) else None,
-            float(row["z_trend"]) if pd.notna(row.get("z_trend")) else None,
+        mr = row.get("market_regime") if "market_regime" in daily.columns else None
+        sm = row.get("selected_model") if "selected_model" in daily.columns else None
+        thr = row.get("epsilon_threshold", default_threshold)
+        rows.append(
+            (
+                t,
+                symbol,
+                asset_class,
+                float(row["epsilon"]),
+                float(row["magnitude"]),
+                bool(row.get("regime_valid", True)),
+                float(row["z_return"]) if pd.notna(row.get("z_return")) else None,
+                float(row["z_volume"]) if pd.notna(row.get("z_volume")) else None,
+                float(row["z_rel_strength"]) if pd.notna(row.get("z_rel_strength")) else None,
+                float(row["price"]) if pd.notna(row.get("price")) else None,
+                float(row["z_trend"]) if pd.notna(row.get("z_trend")) else None,
+                str(mr) if mr is not None and pd.notna(mr) else None,
+                str(sm) if sm is not None and pd.notna(sm) else None,
+                float(row["fair_value"]) if pd.notna(row.get("fair_value")) else None,
+                float(row["band_lo"]) if pd.notna(row.get("band_lo")) else None,
+                float(row["band_hi"]) if pd.notna(row.get("band_hi")) else None,
+                float(row["season_alone"]) if pd.notna(row.get("season_alone")) else None,
+                float(row["h0_compare"]) if pd.notna(row.get("h0_compare")) else None,
+                float(thr) if pd.notna(thr) else default_threshold,
+            )
         )
-        if has_regime:
-            mr = row.get("market_regime")
-            sm = row.get("selected_model")
-            rows.append(base + (str(mr) if pd.notna(mr) else None, str(sm) if pd.notna(sm) else None))
-        else:
-            rows.append(base)
 
+    times = [r[0] for r in rows]
     with get_connection(settings) as conn:
         with conn.cursor() as cur:
-            if has_regime:
-                cur.executemany(
-                    """
-                    INSERT INTO perturbation_daily (
-                      time, symbol, asset_class, epsilon, magnitude, regime_valid,
-                      z_return, z_volume, z_rel_strength, price, z_trend,
-                      market_regime, selected_model, computed_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (time, symbol) DO UPDATE SET
-                      asset_class = EXCLUDED.asset_class,
-                      epsilon = EXCLUDED.epsilon,
-                      magnitude = EXCLUDED.magnitude,
-                      regime_valid = EXCLUDED.regime_valid,
-                      z_return = EXCLUDED.z_return,
-                      z_volume = EXCLUDED.z_volume,
-                      z_rel_strength = EXCLUDED.z_rel_strength,
-                      price = EXCLUDED.price,
-                      z_trend = EXCLUDED.z_trend,
-                      market_regime = EXCLUDED.market_regime,
-                      selected_model = EXCLUDED.selected_model,
-                      computed_at = NOW()
-                    """,
-                    rows,
+            cur.executemany(
+                """
+                INSERT INTO perturbation_daily (
+                  time, symbol, asset_class, epsilon, magnitude, regime_valid,
+                  z_return, z_volume, z_rel_strength, price, z_trend,
+                  market_regime, selected_model,
+                  fair_value, band_lo, band_hi, season_alone, h0_compare,
+                  epsilon_threshold, computed_at
                 )
-            else:
-                cur.executemany(
-                    """
-                    INSERT INTO perturbation_daily (
-                      time, symbol, asset_class, epsilon, magnitude, regime_valid,
-                      z_return, z_volume, z_rel_strength, price, z_trend, computed_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (time, symbol) DO UPDATE SET
-                      asset_class = EXCLUDED.asset_class,
-                      epsilon = EXCLUDED.epsilon,
-                      magnitude = EXCLUDED.magnitude,
-                      regime_valid = EXCLUDED.regime_valid,
-                      z_return = EXCLUDED.z_return,
-                      z_volume = EXCLUDED.z_volume,
-                      z_rel_strength = EXCLUDED.z_rel_strength,
-                      price = EXCLUDED.price,
-                      z_trend = EXCLUDED.z_trend,
-                      computed_at = NOW()
-                    """,
-                    rows,
+                VALUES (
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()
                 )
+                ON CONFLICT (time, symbol) DO UPDATE SET
+                  asset_class = EXCLUDED.asset_class,
+                  epsilon = EXCLUDED.epsilon,
+                  magnitude = EXCLUDED.magnitude,
+                  regime_valid = EXCLUDED.regime_valid,
+                  z_return = EXCLUDED.z_return,
+                  z_volume = EXCLUDED.z_volume,
+                  z_rel_strength = EXCLUDED.z_rel_strength,
+                  price = EXCLUDED.price,
+                  z_trend = EXCLUDED.z_trend,
+                  market_regime = COALESCE(EXCLUDED.market_regime, perturbation_daily.market_regime),
+                  selected_model = COALESCE(EXCLUDED.selected_model, perturbation_daily.selected_model),
+                  fair_value = EXCLUDED.fair_value,
+                  band_lo = EXCLUDED.band_lo,
+                  band_hi = EXCLUDED.band_hi,
+                  season_alone = EXCLUDED.season_alone,
+                  h0_compare = EXCLUDED.h0_compare,
+                  epsilon_threshold = EXCLUDED.epsilon_threshold,
+                  computed_at = NOW()
+                """,
+                rows,
+            )
+            # Drop bars left from older detects (e.g. pre-H₀-band / pre-σ-floor) so Grafana
+            # does not mix eras when the price series coverage changed.
+            cur.execute(
+                """
+                DELETE FROM perturbation_daily
+                WHERE symbol = %s
+                  AND NOT (time = ANY(%s::timestamptz[]))
+                """,
+                (symbol, times),
+            )
         conn.commit()
     return len(rows)
 

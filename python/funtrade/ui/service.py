@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
+from functools import lru_cache
 
 import pandas as pd
+import yfinance as yf
 
 from funtrade.backtest.engine import (
     H0_SOURCE_SAVED,
@@ -52,6 +54,51 @@ MODEL_PERTURBATION = "perturbation"
 MODEL_MOMENTUM_BENCHMARK = "momentum_benchmark"
 MODEL_AUTO = "auto"
 RECOMMENDATION_MODELS = (MODEL_PERTURBATION, MODEL_MOMENTUM_BENCHMARK, MODEL_AUTO)
+
+
+@lru_cache(maxsize=32)
+def _fx_rate(from_ccy: str, to_ccy: str) -> float:
+    """Latest FX rate via yfinance.
+
+    Rates are defined as: `amount_in_to = amount_in_from * rate`.
+    Supports EUR/USD/NOK pairs.
+    """
+    from_ccy = from_ccy.upper().strip()
+    to_ccy = to_ccy.upper().strip()
+    if from_ccy == to_ccy:
+        return 1.0
+
+    # yfinance tickers:
+    # - EURUSD=X: USD per EUR
+    # - EURNOK=X: NOK per EUR
+    # - USDNOK=X: NOK per USD
+    if from_ccy == "EUR" and to_ccy == "USD":
+        ticker = "EURUSD=X"
+        return float(yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=True).iloc[-1]["Close"])
+    if from_ccy == "USD" and to_ccy == "EUR":
+        ticker = "EURUSD=X"
+        eurusd = float(yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=True).iloc[-1]["Close"])
+        return 1.0 / eurusd
+    if from_ccy == "EUR" and to_ccy == "NOK":
+        ticker = "EURNOK=X"
+        return float(yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=True).iloc[-1]["Close"])
+    if from_ccy == "NOK" and to_ccy == "EUR":
+        ticker = "EURNOK=X"
+        eurnok = float(yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=True).iloc[-1]["Close"])
+        return 1.0 / eurnok
+    if from_ccy == "USD" and to_ccy == "NOK":
+        ticker = "USDNOK=X"
+        return float(yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=True).iloc[-1]["Close"])
+    if from_ccy == "NOK" and to_ccy == "USD":
+        ticker = "USDNOK=X"
+        usdnok = float(yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=True).iloc[-1]["Close"])
+        return 1.0 / usdnok
+
+    raise ValueError(f"Unsupported FX conversion {from_ccy!r} -> {to_ccy!r}")
+
+
+def _convert_currency_value(value: float, *, from_ccy: str, to_ccy: str) -> float:
+    return float(value) * _fx_rate(from_ccy, to_ccy)
 
 
 def backtest_params_fingerprint(params: UiParams) -> str:
@@ -255,11 +302,44 @@ class RecommendationScope:
 def _portfolio_position_maps(portfolio) -> tuple[dict[str, float], dict[str, float]]:
     shares: dict[str, float] = {}
     values: dict[str, float] = {}
+    common = str(getattr(portfolio, "currency", "EUR") or "EUR").upper().strip()
     for h in portfolio.holdings:
         if h.shares is not None:
             shares[h.symbol] = float(h.shares)
-        if h.value_eur is not None:
-            values[h.symbol] = float(h.value_eur)
+        if any(v is not None for v in (h.value_eur, getattr(h, "value_nok", None), getattr(h, "value_usd", None))):
+            v_common: float | None = None
+
+            # Prefer the value that matches the portfolio currency.
+            if common == "NOK":
+                if h.value_nok is not None:
+                    v_common = float(h.value_nok)
+                elif h.value_eur is not None:
+                    # Legacy: some portfolio files store NOK amounts in `value_eur`.
+                    v_common = float(h.value_eur)
+                elif h.value_usd is not None:
+                    v_common = _convert_currency_value(float(h.value_usd), from_ccy="USD", to_ccy="NOK")
+            elif common == "EUR":
+                if h.value_eur is not None:
+                    v_common = float(h.value_eur)
+                elif h.value_usd is not None:
+                    v_common = _convert_currency_value(float(h.value_usd), from_ccy="USD", to_ccy="EUR")
+                elif h.value_nok is not None:
+                    v_common = _convert_currency_value(float(h.value_nok), from_ccy="NOK", to_ccy="EUR")
+            elif common == "USD":
+                if h.value_usd is not None:
+                    v_common = float(h.value_usd)
+                elif h.value_eur is not None:
+                    v_common = _convert_currency_value(float(h.value_eur), from_ccy="EUR", to_ccy="USD")
+                elif h.value_nok is not None:
+                    v_common = _convert_currency_value(float(h.value_nok), from_ccy="NOK", to_ccy="USD")
+            else:
+                # Unknown common currency — fall back to any numeric value.
+                v_common = float(h.value_eur) if h.value_eur is not None else (
+                    float(h.value_nok) if h.value_nok is not None else float(h.value_usd)  # type: ignore[arg-type]
+                )
+
+            if v_common is not None:
+                values[h.symbol] = v_common
     return shares, values
 
 

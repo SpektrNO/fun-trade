@@ -77,7 +77,7 @@ grafana-reload: ## Restart Grafana to load provisioned dashboards
 	@echo "Grafana: http://localhost:3001 → Dashboards → FunTrade folder"
 
 migrate: ## Apply SQL migrations to running DB
-	@for f in $(ROOT)/sql/002_paper_trading.sql $(ROOT)/sql/003_factor_signals.sql $(ROOT)/sql/004_perturbation_daily.sql $(ROOT)/sql/005_perturbation_daily_asset_class.sql $(ROOT)/sql/006_perturbation_daily_z_trend.sql $(ROOT)/sql/007_perturbation_daily_market_regime.sql; do \
+	@for f in $(ROOT)/sql/002_paper_trading.sql $(ROOT)/sql/003_factor_signals.sql $(ROOT)/sql/004_perturbation_daily.sql $(ROOT)/sql/005_perturbation_daily_asset_class.sql $(ROOT)/sql/006_perturbation_daily_z_trend.sql $(ROOT)/sql/007_perturbation_daily_market_regime.sql $(ROOT)/sql/008_perturbation_daily_fair_band.sql $(ROOT)/sql/009_perturbation_daily_h0_compare.sql $(ROOT)/sql/010_perturbation_daily_season_alone.sql; do \
 		echo "Applying $$f..."; \
 		docker exec -i funtrade-timescaledb psql -U $${POSTGRES_USER:-funtrade} -d $${POSTGRES_DB:-funtrade} < "$$f"; \
 	done

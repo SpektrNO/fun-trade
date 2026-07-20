@@ -1,5 +1,23 @@
 {
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 0,
+        "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+        "enable": true,
+        "hide": false,
+        "iconColor": "semi-dark-red",
+        "name": "Regime invalid",
+        "target": {
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH ordered AS (\n  SELECT time,\n         regime_valid,\n         lag(regime_valid) OVER (ORDER BY time) AS prev_rv\n  FROM perturbation_daily\n  WHERE symbol = '$symbol' AND $__timeFilter(time)\n),\nstarts AS (\n  SELECT time,\n         regime_valid,\n         SUM(\n           CASE\n             WHEN regime_valid = false\n              AND (prev_rv IS NULL OR prev_rv = true) THEN 1\n             ELSE 0\n           END\n         ) OVER (ORDER BY time) AS grp\n  FROM ordered\n)\nSELECT\n  MIN(time) AS time,\n  MAX(time) + interval '1 day' AS \"timeEnd\",\n  'Regime invalid — buys blocked' AS text\nFROM starts\nWHERE regime_valid = false\nGROUP BY grp\nORDER BY 1",
+          "refId": "Anno"
+        }
+      }
+    ]
+  },
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -10,6 +28,7 @@
   "panels": [
     {
       "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "description": "Adj. close price. Red region annotations mark contiguous stretches where regime_valid=false (from perturbation_daily — run make detect).",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -35,11 +54,53 @@
     },
     {
       "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "description": "valid = mean-reversion buys allowed; invalid = consecutive |ε| spike streak (or liquidity halt) blocked buys. Requires make detect.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "fillOpacity": 70, "lineWidth": 0 },
+          "mappings": [
+            { "type": "value", "options": { "valid": { "color": "green", "index": 0, "text": "valid" } } },
+            { "type": "value", "options": { "invalid": { "color": "semi-dark-red", "index": 1, "text": "invalid" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "semi-dark-red", "value": 0 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 10 },
+      "id": 11,
+      "options": {
+        "alignValue": "center",
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "showValue": "auto",
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "time_series",
+          "rawSql": "SELECT time AS \"time\", CASE WHEN regime_valid THEN 'valid' ELSE 'invalid' END AS \"regime\" FROM perturbation_daily WHERE symbol = '$symbol' AND $__timeFilter(time) ORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Regime validity ($symbol)",
+      "type": "state-timeline"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
       "fieldConfig": {
         "defaults": { "unit": "short", "displayName": "Volume" },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
       "id": 2,
       "options": { "legend": { "displayMode": "list" }, "tooltip": { "mode": "single" } },
       "targets": [
@@ -56,7 +117,7 @@
     {
       "datasource": { "type": "postgres", "uid": "TimescaleDB" },
       "fieldConfig": { "defaults": {}, "overrides": [] },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
       "id": 3,
       "options": { "showHeader": true },
       "targets": [
@@ -72,7 +133,7 @@
     },
     {
       "datasource": { "type": "postgres", "uid": "TimescaleDB" },
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 },
       "id": 10,
       "options": {
         "content": "**H₀ macro factors** — optional oil & climate from `factor_signals` (`make ingest-factors`, enable `H0_ENABLE_OIL` / `H0_ENABLE_CLIMATE` in `.env`).",
@@ -98,7 +159,7 @@
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
       "id": 4,
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
       "targets": [
@@ -128,7 +189,7 @@
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
       "id": 5,
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
       "targets": [
@@ -145,7 +206,7 @@
     {
       "datasource": { "type": "postgres", "uid": "TimescaleDB" },
       "fieldConfig": { "defaults": {}, "overrides": [] },
-      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 27 },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 30 },
       "id": 6,
       "options": { "showHeader": true },
       "targets": [
@@ -188,5 +249,5 @@
   "timezone": "browser",
   "title": "Market Data",
   "uid": "funtrade-market-data",
-  "version": 2
+  "version": 3
 }

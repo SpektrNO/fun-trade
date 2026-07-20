@@ -140,6 +140,8 @@ FunTrade names layers after a physics metaphor (equilibrium + perturbation). You
 
 **Output:** a **fair value band** around exp(season + μ + macro_adj), typically ±2σ in log-price space.
 
+**ETF defaults:** `h0_seasonal_dow: false`, `h0_sigma_floor: 0.02`, `w_volume: 0`, and a light realized-vol σ blend — stops weekly ε sawtooth from DOW dummies + Monday volume when `z_return` would otherwise clip at ±8.
+
 **Calibration:** `make calibrate-all` fits H₀ per symbol. Window length: `h0_calibration_days` in `config.json` (504 for ETFs, 730 for mutual funds).
 
 ### H₁ — fast perturbation ε
@@ -150,7 +152,7 @@ FunTrade names layers after a physics metaphor (equilibrium + perturbation). You
 |-----------|----------------------|---------|
 | `z_return` | 0.35 | Price vs H₀ band (main mean-reversion driver) |
 | `w_rel_strength` | 0.25 | Symbol vs sector/benchmark return |
-| `w_volume` | 0.10 | Unusual volume (0 for mutual funds) |
+| `w_volume` | 0.0 | Unusual volume (default off; Monday spikes otherwise weekly-warp ε) |
 | `z_vol` | 0.15 (fixed in code) | Short vs long volatility ratio |
 
 **Trade rule (perturbation, long-only):**

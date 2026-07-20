@@ -405,11 +405,11 @@ Provisioned under **Dashboards → FunTrade** (after `make run`):
 
 | Dashboard | Content |
 |-----------|---------|
-| **Market Data** | Price, volume, ingested symbols, **H₀ oil & climate** (`factor_signals`) |
-| **Perturbation Model** | Daily ε time series (`perturbation_daily`), H₀ calibrations, backtest runs |
+| **Market Data** | Price, volume, **regime_valid** annotations + timeline, ingested symbols, **H₀ oil & climate** (`factor_signals`) |
+| **Perturbation Model** | **H₀ band** (price / season-alone / fair / band, one EUR axis) over **ε ± threshold**, regime timeline, calibrations, backtests |
 | **Paper Trading** | Portfolio, positions, fills |
 
-The ε chart needs **`make detect`** (or `make refresh`) — each detect upserts the full daily ε history per symbol. The old `perturbation_events` table only stores the latest snapshot per run (one point if you ran detect once).
+The ε / H₀-band charts need **`make detect`** (or `make refresh`) after migrations — each detect upserts daily ε, fair value, and band edges per symbol. The old `perturbation_events` table only stores the latest snapshot per run (one point if you ran detect once).
 
 If you upgraded from an older DB, apply migrations then re-detect:
 

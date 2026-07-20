@@ -7,11 +7,13 @@ from funtrade.ui.service import (
     _recommendation_momentum_signal,
     _recommendation_note,
     _recommendation_position_qty,
+    _portfolio_position_maps,
     _sort_recommendations_by_position,
     default_ui_params,
     format_position_shares,
     params_draft_pending,
 )
+from funtrade.portfolio_config import PortfolioConfig, PortfolioHolding
 
 
 def test_recommendation_momentum_buy_ignores_existing_position():
@@ -76,6 +78,79 @@ def test_recommendation_signal_buy():
         trend_gate_z=0.5,
     )
     assert note == "Mean-reversion buy"
+
+
+def test_portfolio_position_maps_prefers_shares_over_value():
+    portfolio = PortfolioConfig(
+        name="P",
+        currency="NOK",
+        valuation_mode="weight_pct",
+        holdings=(
+            PortfolioHolding(
+                symbol="VWCE.DE",
+                weight_pct=100.0,
+                shares=12.0,
+                value_eur=999.0,
+                value_nok=1000.0,
+                value_usd=10.0,
+            ),
+        ),
+    )
+    shares, values = _portfolio_position_maps(portfolio)
+    assert shares["VWCE.DE"] == 12.0
+    # value map may still exist, but shares take precedence in recommendation logic.
+    assert values["VWCE.DE"] in (999.0, 1000.0)
+
+
+def test_portfolio_position_maps_legacy_value_eur_used_as_nok():
+    portfolio = PortfolioConfig(
+        name="P",
+        currency="NOK",
+        valuation_mode="weight_pct",
+        holdings=(
+            PortfolioHolding(
+                symbol="VWCE.DE",
+                weight_pct=100.0,
+                shares=None,
+                value_eur=123.0,
+                value_nok=None,
+                value_usd=None,
+            ),
+        ),
+    )
+    shares, values = _portfolio_position_maps(portfolio)
+    assert "VWCE.DE" not in shares
+    assert values["VWCE.DE"] == pytest.approx(123.0)
+
+
+def test_portfolio_position_maps_converts_value_nok_to_eur(monkeypatch):
+    import funtrade.ui.service as svc
+
+    def fake_convert(value: float, *, from_ccy: str, to_ccy: str) -> float:
+        assert from_ccy == "NOK"
+        assert to_ccy == "EUR"
+        return value * 2.0
+
+    monkeypatch.setattr(svc, "_convert_currency_value", fake_convert)
+
+    portfolio = PortfolioConfig(
+        name="P",
+        currency="EUR",
+        valuation_mode="weight_pct",
+        holdings=(
+            PortfolioHolding(
+                symbol="VWCE.DE",
+                weight_pct=100.0,
+                shares=None,
+                value_eur=None,
+                value_nok=10.0,
+                value_usd=None,
+            ),
+        ),
+    )
+    shares, values = _portfolio_position_maps(portfolio)
+    assert shares == {}
+    assert values["VWCE.DE"] == pytest.approx(20.0)
 
 
 def test_recommendation_signal_blocked_by_regime():

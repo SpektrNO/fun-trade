@@ -112,7 +112,7 @@ Configured per asset class in `config.json`; overridden in the **UI sidebar** fo
 | Weight | Drives | Typical use |
 |--------|--------|-------------|
 | **`w_return`** | Price vs H₀ band (normalized residual) | Core mean-reversion; main dial for “how much price matters” |
-| **`w_volume`** | Unusual volume vs 20d baseline | ETFs with real volume; set **0** for mutual funds |
+| **`w_volume`** | Unusual volume vs 20d baseline | Default **0** for ETFs and mutual funds (Monday volume spikes created a weekly ε sawtooth); raise only if you want volume stress in ε |
 | **`w_rel_strength`** | Symbol return minus sector/benchmark ETF | Catches “this fund lagged Europe today” |
 
 Fixed in code (not in UI): **`z_vol`** (20d/252d vol ratio) at weight **0.15** in the ε blend, plus small macro terms if present in stored factor data.
@@ -325,7 +325,7 @@ Use Recommendations → **Momentum benchmark** (not perturbation). Backtest agai
 | `min_daily_volume_eur` | 100000 | Liquidity gate (0 = off) |
 | `h0_calibration_days` | 504 | H₀ fit window |
 | `w_return` | 0.35 | H₁ price vs band weight |
-| `w_volume` | 0.10 | H₁ volume weight |
+| `w_volume` | 0.0 | H₁ volume weight (off by default for ETFs) |
 | `w_rel_strength` | 0.25 | H₁ relative return weight |
 | `trend_epsilon_weight` | 0.15 | H₂ ε dampening (needs `TREND_ENABLE`) |
 | `trend_fair_value_weight` | 0.0 | H₂ fair value lift |

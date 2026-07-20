@@ -21,9 +21,11 @@ def test_universe_config_h0_defaults_by_asset_class():
     etf = cfg.etf
     fund = cfg.mutual_fund
     share = cfg.share
-    assert etf.h0_sigma_floor == 0.0
+    assert etf.h0_sigma_floor == 0.02
     assert etf.h0_band_sigma_mult == 2.0
-    assert etf.h0_seasonal_dow is True
+    assert etf.h0_seasonal_dow is False
+    assert etf.h0_realized_vol_sigma_frac == 0.35
+    assert etf.w_volume == 0.0
     assert fund.h0_sigma_floor == 0.015
     assert fund.h0_band_sigma_mult == 2.5
     assert fund.h0_seasonal_dow is False
@@ -35,7 +37,9 @@ def test_settings_for_symbol_applies_h0_calibration_params():
     settings = Settings.from_env()
     etf = settings.for_symbol("VWCE.DE")
     fund = settings.for_symbol("NO0010336977")
-    assert etf.h0_sigma_floor == 0.0
+    assert etf.h0_sigma_floor == 0.02
+    assert etf.h0_seasonal_dow is False
+    assert etf.w_volume == 0.0
     assert fund.h0_sigma_floor == 0.015
     assert fund.h0_band_sigma_mult == 2.5
     assert fund.h0_seasonal_dow is False
