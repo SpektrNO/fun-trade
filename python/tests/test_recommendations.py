@@ -131,7 +131,7 @@ def test_portfolio_position_maps_converts_value_nok_to_eur(monkeypatch):
         assert to_ccy == "EUR"
         return value * 2.0
 
-    monkeypatch.setattr(svc, "_convert_currency_value", fake_convert)
+    monkeypatch.setattr(svc, "convert_currency_value", fake_convert)
 
     portfolio = PortfolioConfig(
         name="P",

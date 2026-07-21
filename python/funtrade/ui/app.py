@@ -460,8 +460,9 @@ with tab_wallet:
 with tab_portfolio:
     st.subheader("Portfolio allocation")
     st.caption(
-        "Strategic holdings from **`portfolio.json`** or **`portfolio_*.json`** with look-through "
-        "sector/region/asset-class from **`fund_profiles/`**. Separate from the paper trading wallet."
+        "Default **`portfolio.json`** mirrors the paper wallet (auto-updated on virtual trades). "
+        "Other **`portfolio_*.json`** files are manual Nordnet holdings with look-through "
+        "sector/region/asset-class from **`fund_profiles/`**."
     )
     portfolio_files = discover_portfolio_files()
     alloc = None
@@ -501,6 +502,7 @@ with tab_portfolio:
             columns={
                 "symbol": "Symbol",
                 "portfolio_weight_pct": "Weight %",
+                "value_amount": f"Value ({alloc.currency})",
                 "name": "Fund",
                 "profile_as_of": "Profile as of",
                 "has_profile": "Profile",
@@ -509,7 +511,7 @@ with tab_portfolio:
         )
         show_holdings = [
             c for c in holdings.columns
-            if c not in ("weight_pct", "value_eur", "shares")
+            if c not in ("weight_pct", "value_eur", "value_nok", "value_usd", "shares")
         ]
         st.markdown("**Holdings**")
         st.dataframe(holdings[show_holdings], width="stretch", hide_index=True)

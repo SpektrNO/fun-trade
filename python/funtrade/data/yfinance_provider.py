@@ -22,7 +22,9 @@ class YFinancePriceProvider:
             raise ValueError("yfinance adapter only supports daily bars")
 
         ticker = yf.Ticker(resolve_fetch_ticker(symbol))
-        df = ticker.history(start=start.tz_localize(None), end=end.tz_localize(None), auto_adjust=True)
+        # yfinance treats `end` as exclusive — add one day so today's bar is included.
+        end_exclusive = end.tz_localize(None) + pd.Timedelta(days=1)
+        df = ticker.history(start=start.tz_localize(None), end=end_exclusive, auto_adjust=True)
         if df.empty:
             return pd.DataFrame()
 

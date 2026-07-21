@@ -115,7 +115,9 @@ def _parse_holding(raw: dict, *, valuation_mode: PortfolioValuationMode) -> Port
     val_nok = float(value_nok) if value_nok is not None else None
     val_usd = float(value_usd) if value_usd is not None else None
 
-    if valuation_mode == "weight_pct" and w is None:
+    has_value = val is not None or val_nok is not None or val_usd is not None
+
+    if valuation_mode == "weight_pct" and w is None and not has_value:
         raise ValueError(f"portfolio holding {symbol!r}: weight_pct required when valuation_mode=weight_pct")
     if valuation_mode == "shares" and sh is None:
         raise ValueError(f"portfolio holding {symbol!r}: shares required when valuation_mode=shares")

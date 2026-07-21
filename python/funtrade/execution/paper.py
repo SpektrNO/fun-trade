@@ -310,7 +310,7 @@ def execute_trade(
     }
     _append_csv(fill_dict, paper.csv_path)
 
-    return PaperFill(
+    fill = PaperFill(
         id=trade_id,
         symbol=symbol,
         side=side,
@@ -319,6 +319,21 @@ def execute_trade(
         fee_eur=fee,
         cash_after=cash_after,
     )
+    _sync_default_portfolio_json(settings=settings, paper=paper)
+    return fill
+
+
+def _sync_default_portfolio_json(
+    *,
+    settings: Settings | None = None,
+    paper: PaperSettings | None = None,
+) -> None:
+    try:
+        from funtrade.portfolio.paper_sync import sync_portfolio_json_from_paper_wallet
+
+        sync_portfolio_json_from_paper_wallet(settings=settings, paper=paper)
+    except Exception:
+        pass
 
 
 def get_position_quantities(
@@ -440,3 +455,4 @@ def reset_paper_portfolio(
         conn.commit()
     if paper.csv_path.exists():
         paper.csv_path.unlink()
+    _sync_default_portfolio_json(settings=settings, paper=paper)

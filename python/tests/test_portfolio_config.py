@@ -156,3 +156,23 @@ def test_load_portfolio_config_requires_weight_when_mode_weight_pct(tmp_path, mo
     monkeypatch.setenv("FUNTRADE_PORTFOLIO", str(path))
     with pytest.raises(ValueError, match="weight_pct"):
         load_portfolio_config(force_reload=True)
+
+
+def test_load_portfolio_config_allows_value_only_holdings(tmp_path, monkeypatch):
+    reset_portfolio_config_cache()
+    path = tmp_path / "portfolio.json"
+    path.write_text(
+        json.dumps(
+            {
+                "currency": "NOK",
+                "valuation_mode": "weight_pct",
+                "holdings": [{"symbol": "VWCE.DE", "value_nok": 1000.0}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FUNTRADE_PORTFOLIO", str(path))
+    cfg = load_portfolio_config(force_reload=True)
+    assert cfg is not None
+    assert cfg.holdings[0].value_nok == pytest.approx(1000.0)
+    assert cfg.holdings[0].weight_pct is None

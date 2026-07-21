@@ -8,6 +8,7 @@ import pandas as pd
 
 from funtrade.config import Settings
 from funtrade.data.latest_price import augment_live_eod_bars, primary_has_official_today
+from funtrade.data.nordnet_nav import merge_nordnet_nav_bar
 from funtrade.data.loader import upsert_price_bars
 from funtrade.data.provider import PriceProvider
 from funtrade.data.stooq import StooqPriceProvider
@@ -75,7 +76,9 @@ def ingest_watchlist(
             bars, source = _fetch_bars(symbol, start, end, provider)
             sym_settings = settings.for_symbol(symbol)
             asset_class = sym_settings.asset_class or "etf"
-            if not primary_has_official_today(bars, source):
+            if asset_class == "mutual_fund":
+                bars = merge_nordnet_nav_bar(bars, symbol)
+            elif not primary_has_official_today(bars, source):
                 bars = augment_live_eod_bars(bars, symbol, asset_class=asset_class)
             counts[symbol] = upsert_price_bars(symbol, bars, source=source, settings=settings)
         except Exception:

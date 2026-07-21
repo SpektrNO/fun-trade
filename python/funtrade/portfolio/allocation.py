@@ -7,6 +7,11 @@ from dataclasses import dataclass
 import pandas as pd
 
 from funtrade.portfolio.fund_profiles import FundProfile, load_fund_profile
+from funtrade.portfolio.values import (
+    portfolio_has_value_amounts,
+    portfolio_holding_values,
+    portfolio_weight_fractions,
+)
 from funtrade.portfolio_config import PortfolioConfig, load_portfolio_config
 
 
@@ -26,18 +31,15 @@ class PortfolioAllocationResult:
 
 
 def _holding_weights(portfolio: PortfolioConfig) -> dict[str, float]:
+    if portfolio_has_value_amounts(portfolio):
+        return portfolio_weight_fractions(portfolio)
     if portfolio.valuation_mode == "weight_pct":
-        raw = {h.symbol: float(h.weight_pct or 0.0) for h in portfolio.holdings}
-    elif portfolio.valuation_mode == "value_eur":
-        raw = {h.symbol: float(h.value_eur or 0.0) for h in portfolio.holdings}
-    else:
-        raise NotImplementedError(
-            f"Portfolio allocation for valuation_mode={portfolio.valuation_mode!r} not implemented yet"
-        )
-    total = sum(raw.values())
-    if total <= 0:
-        return {}
-    return {sym: w / total for sym, w in raw.items()}
+        return portfolio_weight_fractions(portfolio)
+    if portfolio.valuation_mode == "value_eur":
+        return portfolio_weight_fractions(portfolio)
+    raise NotImplementedError(
+        f"Portfolio allocation for valuation_mode={portfolio.valuation_mode!r} not implemented yet"
+    )
 
 
 def _rollup(
@@ -81,8 +83,13 @@ def compute_portfolio_allocation(
         else:
             profiles[symbol] = prof
 
-    raw_total = portfolio.total_weight_pct()
-    normalized = portfolio.valuation_mode == "weight_pct" and abs(raw_total - 100.0) > 0.01
+    value_amounts = portfolio_holding_values(portfolio) if portfolio_has_value_amounts(portfolio) else {}
+    if value_amounts:
+        raw_total = 100.0
+        normalized = False
+    else:
+        raw_total = portfolio.total_weight_pct()
+        normalized = portfolio.valuation_mode == "weight_pct" and abs(raw_total - 100.0) > 0.01
 
     holding_rows: list[dict] = []
     for h in portfolio.holdings:
@@ -93,6 +100,9 @@ def compute_portfolio_allocation(
                 "symbol": h.symbol,
                 "weight_pct": h.weight_pct,
                 "value_eur": h.value_eur,
+                "value_nok": h.value_nok,
+                "value_usd": h.value_usd,
+                "value_amount": value_amounts.get(h.symbol),
                 "shares": h.shares,
                 "portfolio_weight_pct": round(port_w * 100.0, 2),
                 "name": prof.name if prof else "",

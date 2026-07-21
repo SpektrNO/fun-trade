@@ -35,6 +35,23 @@ def test_look_through_allocation():
     assert float(na_row["weight_pct"].iloc[0]) == pytest.approx(54.6, abs=2.0)
 
 
+def test_look_through_allocation_from_position_values():
+    portfolio = PortfolioConfig(
+        name="Test",
+        currency="NOK",
+        valuation_mode="weight_pct",
+        holdings=(
+            PortfolioHolding(symbol="VWCE.DE", value_nok=750_000.0),
+            PortfolioHolding(symbol="AGGH.DE", value_nok=250_000.0),
+        ),
+    )
+    result = compute_portfolio_allocation(portfolio)
+    assert result is not None
+    assert result.total_weight_pct == pytest.approx(100.0)
+    vwce = result.holdings.loc[result.holdings["symbol"] == "VWCE.DE", "portfolio_weight_pct"].iloc[0]
+    assert float(vwce) == pytest.approx(75.0)
+
+
 def test_missing_profile_reported():
     portfolio = PortfolioConfig(
         name="Test",
