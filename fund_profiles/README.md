@@ -11,12 +11,16 @@ cp fund_profiles/nordnet_slugs.json.example fund_profiles/nordnet_slugs.json
 make fetch-profiles CLASS='etf mutual_fund'
 ```
 
-**ETFs (EOD Historical Data, optional fallback)** — used in `auto` mode only when no Nordnet slug is mapped; requires `EOD_API_TOKEN` in `.env`:
+**ETFs (EOD Historical Data)** — default in `auto` mode for ETFs (mutual funds still use Nordnet). Requires `EOD_API_TOKEN` in `.env` when not covered by a built-in profile:
 
 ```bash
 make fetch-profiles CLASS=etf
 # or: uv run funtrade-fetch-profiles --symbol VWCE.DE --source eod
 ```
+
+**Spot crypto ETPs (IBIT, ETHA)** — built-in look-through profiles (100% digital assets); no Nordnet slug needed.
+
+**ETFs on Nordnet** — optional via slug + `--source nordnet` (not used in `auto` for ETFs).
 
 **Mutual funds only (Nordnet):**
 

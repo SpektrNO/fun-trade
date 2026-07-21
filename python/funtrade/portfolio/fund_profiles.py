@@ -86,7 +86,9 @@ def load_fund_profile(symbol: str) -> FundProfile | None:
         if not isinstance(payload, dict):
             raise ValueError(f"{path}: root must be a JSON object")
         return _parse_profile(payload, path=path)
-    return None
+    from funtrade.portfolio.builtin_profiles import get_builtin_fund_profile
+
+    return get_builtin_fund_profile(sym)
 
 
 def save_fund_profile(profile: FundProfile, *, overwrite: bool = True) -> Path:

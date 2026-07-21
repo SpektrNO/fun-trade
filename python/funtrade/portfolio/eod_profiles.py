@@ -7,6 +7,7 @@ from typing import Any
 
 import requests
 
+from funtrade.data.symbols import resolve_fetch_ticker
 from funtrade.portfolio.fund_profiles import FundProfile
 
 _EOD_BASE = "https://eodhistoricaldata.com/api/fundamentals"
@@ -42,7 +43,7 @@ _REGION_MAP: dict[str, str] = {
 
 def eod_ticker_for(symbol: str) -> str:
     """Map watchlist symbol to EOD fundamentals ticker."""
-    sym = symbol.strip()
+    sym = resolve_fetch_ticker(symbol).strip()
     upper = sym.upper()
     if upper.endswith(".DE"):
         return f"{sym[:-3]}.XETRA"

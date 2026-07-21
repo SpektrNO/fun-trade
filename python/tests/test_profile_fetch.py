@@ -11,6 +11,15 @@ def test_eod_ticker_maps_xetra():
     assert eod_ticker_for("VWCE.DE") == "VWCE.XETRA"
 
 
+def test_eod_ticker_resolves_watchlist_alias(monkeypatch):
+    monkeypatch.setattr(
+        "funtrade.portfolio.eod_profiles.resolve_fetch_ticker",
+        lambda symbol: {"iShares.Bitcoin.Trust.ETF": "IBIT", "iShares.Ethereum.Trust.ETF": "ETHA"}[symbol],
+    )
+    assert eod_ticker_for("iShares.Bitcoin.Trust.ETF") == "IBIT.US"
+    assert eod_ticker_for("iShares.Ethereum.Trust.ETF") == "ETHA.US"
+
+
 def test_parse_eod_etf_profile():
     payload = {
         "General": {"Name": "Vanguard FTSE All-World UCITS ETF"},
@@ -96,8 +105,9 @@ def test_fetch_profile_for_symbol_routes_mutual_fund_to_nordnet(monkeypatch):
     assert "Asia" in profile.regions
 
 
-def test_fetch_profile_for_symbol_routes_etf_to_nordnet_when_slug_present(monkeypatch):
+def test_fetch_profile_for_symbol_routes_etf_to_eod_in_auto(monkeypatch):
     from funtrade.config import Settings
+    from funtrade.portfolio.fund_profiles import FundProfile
 
     settings = Settings.from_env()
     monkeypatch.setattr(
@@ -105,18 +115,30 @@ def test_fetch_profile_for_symbol_routes_etf_to_nordnet_when_slug_present(monkey
         lambda: {"VWCE.DE": "vanguard-ftse-all-world-ucits-etf-eur-abc12345"},
     )
     monkeypatch.setattr(
-        "funtrade.portfolio.profile_fetch.fetch_nordnet_fund_profile",
-        lambda slug, symbol: parse_nordnet_fund_html(
-            '\\"regions\\":[{\\"displayName\\":\\"USA\\",\\"weight\\":100.0}],'
-            '\\"sectors\\":[{\\"displayName\\":\\"Teknologi\\",\\"weight\\":100.0}],'
-            '\\"assets\\":[{\\"displayName\\":\\"Aksjer\\",\\"weight\\":100.0}]',
+        "funtrade.portfolio.profile_fetch.fetch_eod_etf_profile",
+        lambda symbol: FundProfile(
             symbol=symbol,
-            slug=slug,
+            name="VWCE",
+            as_of="2026-01-01",
+            source="EOD",
+            regions={"North America": 1.0},
+            sectors={"Technology": 1.0},
+            asset_classes={"Equity": 1.0},
         ),
     )
     profile = fetch_profile_for_symbol("VWCE.DE", settings=settings, source="auto")
     assert profile.symbol == "VWCE.DE"
     assert profile.regions["North America"] == pytest.approx(1.0)
+
+
+def test_fetch_profile_for_symbol_uses_builtin_crypto_etfs():
+    from funtrade.config import Settings
+
+    settings = Settings.from_env()
+    btc = fetch_profile_for_symbol("iShares.Bitcoin.Trust.ETF", settings=settings, source="auto")
+    eth = fetch_profile_for_symbol("iShares.Ethereum.Trust.ETF", settings=settings, source="auto")
+    assert btc.asset_classes["Digital Assets"] == pytest.approx(1.0)
+    assert eth.asset_classes["Digital Assets"] == pytest.approx(1.0)
 
 
 def test_fetch_profile_for_symbol_requires_eod_token(monkeypatch):

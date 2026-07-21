@@ -43,7 +43,7 @@ def symbol_aliases() -> dict[str, str]:
     """Upper-case watchlist id → fetch ticker (config.json aliases + builtins)."""
     merged = {a.watchlist_id.upper(): a.fetch_ticker for a in BUILTIN_ALIASES}
     try:
-        merged.update(load_universe_config().aliases)
+        merged.update({k.upper(): v for k, v in load_universe_config().aliases.items()})
     except FileNotFoundError:
         pass
     return merged

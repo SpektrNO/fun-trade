@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from funtrade.config import Settings
+from funtrade.portfolio.builtin_profiles import get_builtin_fund_profile
 from funtrade.portfolio.eod_profiles import fetch_eod_etf_profile
 from funtrade.portfolio.fund_profiles import FundProfile, load_fund_profile, save_fund_profile
 from funtrade.portfolio.nordnet_profiles import fetch_nordnet_fund_profile
@@ -53,11 +54,10 @@ def fetch_profile_for_symbol(
             raise ValueError(f"No static fund profile for {symbol}")
         return prof
 
+    builtin = get_builtin_fund_profile(symbol)
     slug = nordnet_slug or load_nordnet_slugs().get(symbol)
-    use_nordnet = source == "nordnet" or (
-        source == "auto" and (asset_class == "mutual_fund" or slug)
-    )
-    if use_nordnet:
+
+    if source == "nordnet" or (source == "auto" and asset_class == "mutual_fund"):
         if not slug:
             raise ValueError(
                 f"No Nordnet slug for {symbol}. Add to fund_profiles/nordnet_slugs.json "
@@ -66,7 +66,14 @@ def fetch_profile_for_symbol(
         return fetch_nordnet_fund_profile(slug, symbol=symbol)
 
     if source == "eod" or (source == "auto" and asset_class == "etf"):
-        return fetch_eod_etf_profile(symbol)
+        if builtin is not None:
+            return builtin
+        try:
+            return fetch_eod_etf_profile(symbol)
+        except Exception:
+            if slug and source == "auto":
+                return fetch_nordnet_fund_profile(slug, symbol=symbol)
+            raise
 
     if asset_class == "share":
         raise ValueError(f"Automatic profile fetch not supported for share {symbol}")
