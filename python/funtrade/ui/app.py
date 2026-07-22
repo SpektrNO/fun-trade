@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+from datetime import date
+from dataclasses import replace
 
 import pandas as pd
 import streamlit as st
-from dataclasses import replace
 
 from funtrade.config import Settings
 from funtrade.execution.paper import (
@@ -18,6 +19,8 @@ from funtrade.execution.paper import (
 from funtrade.data.market import latest_price
 from funtrade.models.equilibrium import calibrate_equilibrium
 from funtrade.models.perturbation import detect_latest_perturbations, signal_from_epsilon, trend_signal_kwargs
+from funtrade.portfolio.performance import default_base_date
+from funtrade.portfolio_config import discover_portfolio_files
 from funtrade.ui.plotting import get_chart_renderer
 from funtrade.ui.service import (
     CHART_WINDOW_BACKTEST_TEST,
@@ -28,6 +31,7 @@ from funtrade.ui.service import (
     default_ui_params,
     fetch_recommendations,
     fetch_portfolio_allocation,
+    fetch_portfolio_performance,
     fetch_top_hints_overlay,
     format_position_shares,
     momentum_trade_context,
@@ -47,8 +51,6 @@ from funtrade.ui.service import (
     watchlist_with_class,
     DEFAULT_REFRESH_DAYS,
 )
-from funtrade.portfolio_config import discover_portfolio_files
-
 # Emoji page_icon creates /images/<hash>.png URLs that iOS/link previews open directly;
 # Streamlit then serves HTML at that path and relative ./static/ assets break → blank page.
 st.set_page_config(page_title="FunTrade Console", layout="wide")
@@ -498,11 +500,33 @@ with tab_portfolio:
                 + " — add `fund_profiles/{symbol}.json` or remove from portfolio."
             )
 
-        holdings = alloc.holdings.rename(
+        today = date.today()
+        default_base = st.session_state.get("portfolio_base_date", default_base_date(today=today))
+        if isinstance(default_base, str):
+            default_base = date.fromisoformat(default_base)
+        base_date = st.date_input(
+            "Base date (compare latest prices vs this day)",
+            value=min(default_base, today),
+            max_value=today,
+            key="portfolio_base_date_input",
+            help="Uses the last available close on or before this date for each holding.",
+        )
+        st.session_state["portfolio_base_date"] = base_date
+
+        perf = fetch_portfolio_performance(
+            alloc.holdings,
+            base_date=base_date,
+            currency=alloc.currency,
+            settings=applied.to_settings(),
+        )
+        holdings = alloc.holdings.merge(perf.rows, on="symbol", how="left")
+        holdings = holdings.rename(
             columns={
                 "symbol": "Symbol",
                 "portfolio_weight_pct": "Weight %",
                 "value_amount": f"Value ({alloc.currency})",
+                "change": "Change",
+                "pnl": f"PnL ({alloc.currency})",
                 "name": "Fund",
                 "profile_as_of": "Profile as of",
                 "has_profile": "Profile",
@@ -511,10 +535,83 @@ with tab_portfolio:
         )
         show_holdings = [
             c for c in holdings.columns
-            if c not in ("weight_pct", "value_eur", "value_nok", "value_usd", "shares")
+            if c
+            not in (
+                "weight_pct",
+                "value_eur",
+                "value_nok",
+                "value_usd",
+                "shares",
+                "base_price",
+                "latest_price",
+                "base_as_of",
+                "latest_as_of",
+                "pct_change",
+                "arrow",
+            )
         ]
+        # Prefer Change near the value columns.
+        preferred = [
+            "Symbol",
+            "Weight %",
+            f"Value ({alloc.currency})",
+            "Change",
+            f"PnL ({alloc.currency})",
+            "Fund",
+            "Profile as of",
+            "Profile",
+            "Note",
+        ]
+        ordered = [c for c in preferred if c in show_holdings] + [
+            c for c in show_holdings if c not in preferred
+        ]
+
+        def _style_change(val: object) -> str:
+            text = str(val)
+            if text.startswith("▲"):
+                return "color: #1a7f37; font-weight: 600"
+            if text.startswith("▼"):
+                return "color: #cf222e; font-weight: 600"
+            if text.startswith("→"):
+                return "color: #6e7781"
+            return ""
+
+        display = holdings[ordered]
+        if "Change" in display.columns:
+            styled = display.style.map(_style_change, subset=["Change"])
+        else:
+            styled = display
+
         st.markdown("**Holdings**")
-        st.dataframe(holdings[show_holdings], width="stretch", hide_index=True)
+        st.dataframe(styled, width="stretch", hide_index=True)
+        if perf.missing_prices:
+            st.caption(
+                "No price history for: "
+                + ", ".join(f"`{s}`" for s in perf.missing_prices)
+                + " — run ingest/refresh for those symbols."
+            )
+
+        st.markdown("**Performance vs base date**")
+        p1, p2, p3 = st.columns(3)
+        if perf.total_pnl is not None:
+            pnl_delta = f"{perf.total_pnl:+,.2f} {alloc.currency}"
+            p1.metric("Total PnL", pnl_delta)
+        else:
+            p1.metric("Total PnL", "—")
+        if perf.total_value_latest is not None and perf.total_value_base is not None:
+            p2.metric(f"Value @ latest", f"{perf.total_value_latest:,.2f} {alloc.currency}")
+            p3.metric(f"Value @ base", f"{perf.total_value_base:,.2f} {alloc.currency}")
+            if perf.total_value_base > 0:
+                port_pct = (perf.total_value_latest / perf.total_value_base - 1.0) * 100.0
+                st.caption(
+                    f"Portfolio marked value change since **{base_date.isoformat()}**: "
+                    f"**{port_pct:+.2f}%** (uses last close on/before base date per symbol)."
+                )
+        else:
+            st.caption(
+                "Total PnL needs position values (`value_*` / shares) and price history. "
+                "Weight-only holdings show % change when prices exist, but not cash PnL."
+            )
 
         col_geo, col_sec = st.columns(2)
         with col_geo:

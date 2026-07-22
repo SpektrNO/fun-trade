@@ -43,6 +43,11 @@ from funtrade.models.perturbation import (
 )
 from funtrade.portfolio.allocation import PortfolioAllocationResult, compute_portfolio_allocation
 from funtrade.portfolio.overlay import build_portfolio_overlay
+from funtrade.portfolio.performance import (
+    PortfolioPerformanceResult,
+    compute_portfolio_performance,
+    default_base_date,
+)
 from funtrade.portfolio.values import portfolio_holding_values, portfolio_weight_pcts
 from funtrade.portfolio_config import load_portfolio_config
 from funtrade.ui.plotting.data import build_momentum_price_overlay, build_rsi_chart_frame
@@ -1086,6 +1091,22 @@ def fetch_portfolio_allocation(
     """Look-through allocation from portfolio JSON + fund_profiles/."""
     portfolio = load_portfolio_config(portfolio_path)
     return compute_portfolio_allocation(portfolio)
+
+
+def fetch_portfolio_performance(
+    holdings: pd.DataFrame,
+    *,
+    base_date,
+    currency: str,
+    settings: Settings | None = None,
+) -> PortfolioPerformanceResult:
+    """Price % change and PnL vs base date for portfolio holdings."""
+    return compute_portfolio_performance(
+        holdings,
+        base_date=base_date,
+        currency=currency,
+        settings=settings,
+    )
 
 
 def fetch_top_hints_overlay(
